@@ -128,7 +128,9 @@ function onImageLoad(e) {
 
 // 图片加载失败
 function onImageError(e) {
-  e.target.src = '/placeholder.png'
+  if (!e.target.src.includes('placeholder')) {
+    e.target.src = '/placeholder.svg'
+  }
 }
 
 // 判断是否为图片

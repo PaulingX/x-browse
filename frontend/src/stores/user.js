@@ -8,7 +8,7 @@ import api from '@/api'
 export const useUserStore = defineStore('user', () => {
   // 状态
   const token = ref(localStorage.getItem('token') || '')
-  const userInfo = ref(null)
+  const userInfo = ref(JSON.parse(localStorage.getItem('userInfo') || 'null'))
 
   // 计算属性
   const isLoggedIn = computed(() => !!token.value)
@@ -23,6 +23,7 @@ export const useUserStore = defineStore('user', () => {
         token.value = res.data.token
         userInfo.value = res.data
         localStorage.setItem('token', res.data.token)
+        localStorage.setItem('userInfo', JSON.stringify(res.data))
         return true
       }
       return false
@@ -37,6 +38,7 @@ export const useUserStore = defineStore('user', () => {
     token.value = ''
     userInfo.value = null
     localStorage.removeItem('token')
+    localStorage.removeItem('userInfo')
   }
 
   // 获取用户信息

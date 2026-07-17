@@ -45,18 +45,20 @@ public class FileBrowseService {
      * @param engineId 引擎 ID
      * @param path     目录路径
      * @param refresh  是否刷新缓存
+     * @param page     页码（从1开始）
+     * @param perPage  每页数量
      * @return 文件列表
      */
-    public List<FileItem> listFiles(Long engineId, String path, boolean refresh) {
+    public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage) {
         AlistClient client = engineService.getClient(engineId);
 
         // 标准化路径
         path = normalizePath(path);
 
-        // 获取文件列表
-        List<FileItem> items = client.listFiles(path, refresh);
+        // 获取文件列表（分页）
+        List<FileItem> items = client.listFiles(path, refresh, page, perPage);
 
-        // 填充缩略图和预览 URL
+        // 填充缩略图和预览 URL（使用代理，避免 CORS 问题）
         for (FileItem item : items) {
             enrichFileItem(item, engineId);
         }
@@ -124,27 +126,9 @@ public class FileBrowseService {
 
         String fileName = item.getName();
 
-        // 检查本地缓存
-        String localCachePath = getLocalCachePath(engineId, item.getPath());
-
-        if (isImageFile(fileName)) {
-            // 图片文件
-            if (localCachePath != null) {
-                item.setThumbnail("/api/files/cache/thumb/" + engineId + encodePath(item.getPath()));
-                item.setUrl("/api/files/cache/file/" + engineId + encodePath(item.getPath()));
-            } else {
-                item.setThumbnail("/api/files/proxy/thumb/" + engineId + encodePath(item.getPath()));
-                item.setUrl("/api/files/proxy/file/" + engineId + encodePath(item.getPath()));
-            }
-        } else if (isVideoFile(fileName)) {
-            // 视频文件
-            if (localCachePath != null) {
-                item.setThumbnail("/api/files/cache/thumb/" + engineId + encodePath(item.getPath()));
-                item.setUrl("/api/files/stream/" + engineId + encodePath(item.getPath()));
-            } else {
-                item.setThumbnail("/api/files/proxy/thumb/" + engineId + encodePath(item.getPath()));
-                item.setUrl("/api/files/stream/" + engineId + encodePath(item.getPath()));
-            }
+        if (isImageFile(fileName) || isVideoFile(fileName)) {
+            item.setThumbnail("/api/files/proxy/thumb/" + engineId + "/" + encodePath(item.getPath()));
+            item.setUrl("/api/files/proxy/file/" + engineId + "/" + encodePath(item.getPath()));
         }
     }
 
@@ -169,7 +153,8 @@ public class FileBrowseService {
      * 编码路径用于 URL
      */
     private String encodePath(String path) {
-        return path.replace("/", "~");
+        // 去掉开头的 /，路径直接跟在 engineId/ 后面，由 /** 通配符捕获
+        return path.startsWith("/") ? path.substring(1) : path;
     }
 
     /**

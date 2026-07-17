@@ -47,14 +47,18 @@ public class FileController {
      * @param engineId 引擎 ID
      * @param path     目录路径
      * @param refresh  是否刷新缓存
+     * @param page     页码（从1开始）
+     * @param perPage  每页数量（默认20）
      * @return 文件列表
      */
     @GetMapping("/list")
     public ApiResponse<List<FileItem>> listFiles(
             @RequestParam Long engineId,
             @RequestParam(defaultValue = "/") String path,
-            @RequestParam(defaultValue = "false") boolean refresh) {
-        return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh));
+            @RequestParam(defaultValue = "false") boolean refresh,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int perPage) {
+        return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh, page, perPage));
     }
 
     /**
@@ -78,13 +82,9 @@ public class FileController {
 
             HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
             connection.setRequestMethod("GET");
+            String contentType = getContentType(fullPath);
             connection.setConnectTimeout(30000);
             connection.setReadTimeout(30000);
-
-            String contentType = connection.getContentType();
-            if (contentType == null) {
-                contentType = getContentType(fullPath);
-            }
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType(contentType));
@@ -209,7 +209,9 @@ public class FileController {
     private String extractPathFromUrl(String type, Long engineId, String uri) {
         String prefix = "/api/files/proxy/" + type + "/" + engineId + "/";
         if (uri.startsWith(prefix)) {
-            return "/" + uri.substring(prefix.length());
+            String encoded = uri.substring(prefix.length());
+            // 反转 encodePath: 直接还原为 /path
+            return "/" + encoded;
         }
         return "/";
     }
@@ -217,7 +219,8 @@ public class FileController {
     private String extractStreamPath(Long engineId, String uri) {
         String prefix = "/api/files/stream/" + engineId + "/";
         if (uri.startsWith(prefix)) {
-            return "/" + uri.substring(prefix.length());
+            String encoded = uri.substring(prefix.length());
+            return "/" + encoded;
         }
         return "/";
     }

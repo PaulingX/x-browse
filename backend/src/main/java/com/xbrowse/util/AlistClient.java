@@ -61,12 +61,21 @@ public class AlistClient {
     }
 
     /**
-     * 获取目录列表
+     * 获取目录列表（向后兼容）
      */
     public List<FileItem> listFiles(String path, boolean refresh) {
+        return listFiles(path, refresh, 1, 1000);
+    }
+
+    /**
+     * 获取目录列表（支持分页）
+     */
+    public List<FileItem> listFiles(String path, boolean refresh, int page, int perPage) {
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("path", path);
         requestBody.put("refresh", refresh);
+        requestBody.put("page", page);
+        requestBody.put("per_page", perPage);
 
         Map<String, Object> response = post("/api/fs/list", requestBody);
         List<FileItem> items = new ArrayList<>();

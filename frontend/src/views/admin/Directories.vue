@@ -43,13 +43,13 @@
     </div>
 
     <!-- 添加/编辑目录弹窗 -->
-    <van-popup v-model:show="showAdd" position="bottom" round>
+    <van-popup v-model:show="showAdd" position="bottom" round :style="{ height: '80%' }">
       <div class="popup-content">
         <h3>{{ editingDir ? '编辑目录' : '添加目录' }}</h3>
         <van-form @submit="onSubmit">
           <van-cell-group inset>
             <van-field
-              v-model="form.engineId"
+              :model-value="getEngineName(form.engineId)"
               label="选择引擎"
               placeholder="请选择Alist引擎"
               is-link
@@ -58,10 +58,13 @@
               @click="showEnginePicker = true"
             />
             <van-field
-              v-model="form.path"
+              :model-value="form.path"
               label="目录路径"
-              placeholder="/photos"
-              :rules="[{ required: true, message: '请输入目录路径' }]"
+              placeholder="点击选择目录"
+              readonly
+              is-link
+              :rules="[{ required: true, message: '请选择目录' }]"
+              @click="openDirBrowser"
             />
             <van-field
               v-model="form.name"
@@ -96,11 +99,64 @@
         @cancel="showEnginePicker = false"
       />
     </van-popup>
+
+    <!-- 目录选择器 -->
+    <van-popup v-model:show="showDirBrowser" position="bottom" round :style="{ height: '70%' }">
+      <div class="dir-browser">
+        <div class="dir-browser-header">
+          <span>选择目录</span>
+          <van-button size="small" @click="showDirBrowser = false">取消</van-button>
+        </div>
+        <div class="dir-browser-path">
+          <span v-for="(part, index) in pathParts" :key="index">
+            <span class="path-link" @click="navigateTo(index)">{{ part || '根目录' }}</span>
+            <span v-if="index < pathParts.length - 1" class="path-sep">/</span>
+          </span>
+        </div>
+        <div class="dir-browser-list" v-loading="dirLoading">
+          <van-cell
+            v-if="currentPath !== '/'"
+            title=".."
+            label="返回上级"
+            is-link
+            @click="goBack"
+          >
+            <template #icon>
+              <van-icon name="arrow-left" />
+            </template>
+          </van-cell>
+          <van-cell
+            v-for="item in dirItems"
+            :key="item.name"
+            :title="item.name"
+            is-link
+            @click="enterDir(item)"
+          >
+            <template #icon>
+              <van-icon name="folder" />
+            </template>
+          </van-cell>
+          <div v-if="!dirLoading && dirItems.length === 0 && currentPath === '/'" class="empty-state">
+            <p>该引擎无目录</p>
+          </div>
+        </div>
+        <div class="dir-browser-footer">
+          <van-button
+            block
+            type="primary"
+            @click="confirmDir"
+            :disabled="!currentPath"
+          >
+            选择当前目录: {{ currentPath }}
+          </van-button>
+        </div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import api from '@/api'
 import { showToast, showConfirmDialog } from 'vant'
 
@@ -108,6 +164,7 @@ const directories = ref([])
 const engines = ref([])
 const showAdd = ref(false)
 const showEnginePicker = ref(false)
+const showDirBrowser = ref(false)
 const editingDir = ref(null)
 const submitting = ref(false)
 
@@ -124,6 +181,15 @@ const engineOptions = computed(() => {
     text: e.remark || e.url,
     value: e.id
   }))
+})
+
+// 目录浏览器状态
+const dirLoading = ref(false)
+const currentPath = ref('/')
+const dirItems = ref([])
+
+const pathParts = computed(() => {
+  return currentPath.value.split('/').filter(Boolean)
 })
 
 function getEngineName(engineId) {
@@ -149,6 +215,69 @@ async function loadData() {
 function onEngineSelect({ selectedOptions }) {
   form.value.engineId = selectedOptions[0]?.value
   showEnginePicker.value = false
+}
+
+// 打开目录浏览器
+function openDirBrowser() {
+  if (!form.value.engineId) {
+    showToast('请先选择引擎')
+    return
+  }
+  currentPath.value = '/'
+  dirItems.value = []
+  showDirBrowser.value = true
+  loadDirs('/')
+}
+
+// 加载目录列表
+async function loadDirs(path) {
+  if (!form.value.engineId) return
+  dirLoading.value = true
+  try {
+    const res = await api.get('/api/files/list', {
+      params: { engineId: form.value.engineId, path, refresh: false, page: 1, perPage: 500 }
+    })
+    if (res.code === 200) {
+      dirItems.value = (res.data || []).filter(item => item.isDir)
+    } else {
+      dirItems.value = []
+    }
+  } catch (error) {
+    dirItems.value = []
+    showToast('加载目录失败')
+  } finally {
+    dirLoading.value = false
+  }
+}
+
+// 进入目录
+function enterDir(item) {
+  const newPath = currentPath.value === '/'
+    ? '/' + item.name
+    : currentPath.value + '/' + item.name
+  currentPath.value = newPath
+  loadDirs(newPath)
+}
+
+// 返回上级
+function goBack() {
+  const parts = currentPath.value.split('/').filter(Boolean)
+  parts.pop()
+  currentPath.value = parts.length ? '/' + parts.join('/') : '/'
+  loadDirs(currentPath.value)
+}
+
+// 点击面包屑导航
+function navigateTo(index) {
+  const parts = currentPath.value.split('/').filter(Boolean)
+  currentPath.value = '/' + parts.slice(0, index + 1).join('/')
+  loadDirs(currentPath.value)
+}
+
+// 确认选择目录
+function confirmDir() {
+  form.value.path = currentPath.value
+  showDirBrowser.value = false
 }
 
 // 编辑目录
@@ -239,7 +368,7 @@ onMounted(() => {
 
 .popup-content {
   padding: 20px;
-  max-height: 80vh;
+  height: 100%;
   overflow-y: auto;
 }
 
@@ -253,5 +382,61 @@ onMounted(() => {
 .submit-btn {
   margin-top: 20px;
   padding: 0 16px;
+}
+
+/* 目录浏览器样式 */
+.dir-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.dir-browser-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  font-size: 16px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dir-browser-path {
+  padding: 12px 16px;
+  font-size: 14px;
+  color: var(--text-color-2);
+  background: var(--bg-color);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.path-link {
+  color: var(--primary-color);
+  cursor: pointer;
+}
+
+.path-link:hover {
+  text-decoration: underline;
+}
+
+.path-sep {
+  margin: 0 4px;
+  color: var(--text-color-3);
+}
+
+.dir-browser-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.dir-browser-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px 0;
+  color: var(--text-color-3);
 }
 </style>

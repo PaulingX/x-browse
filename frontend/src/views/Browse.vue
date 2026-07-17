@@ -23,41 +23,51 @@
       </template>
     </div>
 
-    <!-- 文件列表 -->
-    <div v-if="viewMode === 'grid'" class="grid-layout">
-      <div
-        v-for="item in files"
-        :key="item.name"
-        class="folder-card"
-        @click="handleClick(item)"
-      >
-        <div class="file-icon">
-          <van-icon
-            v-if="item.isDir"
-            name="folder-o"
-            size="48"
-            color="#1989fa"
-          />
-          <img
-            v-else-if="item.thumbnail"
-            :src="item.thumbnail"
-            :alt="item.name"
-            class="file-thumbnail"
-            @error="handleImgError"
-          />
-          <van-icon
-            v-else
-            :name="getFileIcon(item.ext)"
-            size="48"
-            :color="getFileColor(item.ext)"
-          />
-        </div>
-        <div class="file-info">
-          <div class="file-name" :title="item.name">{{ item.name }}</div>
-          <div v-if="!item.isDir" class="file-size">{{ formatSize(item.size) }}</div>
+    <!-- 文件列表 - 网格模式 -->
+    <van-list
+      v-if="viewMode === 'grid'"
+      v-model:loading="loadingMore"
+      :finished="!hasMore"
+      finished-text="没有更多了"
+      @load="loadMore"
+      :immediate-check="false"
+      offset="100"
+    >
+      <div class="grid-layout">
+        <div
+          v-for="item in files"
+          :key="item.name"
+          class="folder-card"
+          @click="handleClick(item)"
+        >
+          <div class="file-icon">
+            <van-icon
+              v-if="item.isDir"
+              name="folder-o"
+              size="48"
+              color="#1989fa"
+            />
+            <img
+              v-else-if="item.thumbnail"
+              :src="item.thumbnail"
+              :alt="item.name"
+              class="file-thumbnail"
+              @error="handleImgError"
+            />
+            <van-icon
+              v-else
+              :name="getFileIcon(item.ext)"
+              size="48"
+              :color="getFileColor(item.ext)"
+            />
+          </div>
+          <div class="file-info">
+            <div class="file-name" :title="item.name">{{ item.name }}</div>
+            <div v-if="!item.isDir" class="file-size">{{ formatSize(item.size) }}</div>
+          </div>
         </div>
       </div>
-    </div>
+    </van-list>
 
     <!-- 瀑布流模式 -->
     <div v-else class="waterfall">
@@ -78,7 +88,7 @@
     </div>
 
     <!-- 加载状态 -->
-    <div v-if="loading" class="loading-container">
+    <div v-if="loading && files.length === 0" class="loading-container">
       <van-loading type="spinner" />
     </div>
 
@@ -102,7 +112,11 @@ const currentPath = ref(route.query.path || '/')
 
 const files = ref([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const viewMode = ref('grid')
+const page = ref(1)
+const perPage = ref(20)
+const hasMore = ref(true)
 
 // 计算属性
 const currentDirName = computed(() => {
@@ -125,20 +139,51 @@ const imageFiles = computed(() => {
 // 加载文件列表
 async function loadFiles() {
   loading.value = true
+  page.value = 1
+  hasMore.value = true
   try {
     const res = await api.get('/api/files/list', {
       params: {
         engineId: engineId.value,
-        path: currentPath.value
+        path: currentPath.value,
+        page: page.value,
+        perPage: perPage.value
       }
     })
     if (res.code === 200) {
       files.value = res.data
+      hasMore.value = res.data.length >= perPage.value
     }
   } catch (error) {
     console.error('加载文件列表失败:', error)
   } finally {
     loading.value = false
+  }
+}
+
+// 加载更多（无限滚动）
+async function loadMore() {
+  if (loadingMore.value || !hasMore.value) return
+  
+  loadingMore.value = true
+  page.value++
+  try {
+    const res = await api.get('/api/files/list', {
+      params: {
+        engineId: engineId.value,
+        path: currentPath.value,
+        page: page.value,
+        perPage: perPage.value
+      }
+    })
+    if (res.code === 200) {
+      files.value = [...files.value, ...res.data]
+      hasMore.value = res.data.length >= perPage.value
+    }
+  } catch (error) {
+    console.error('加载更多失败:', error)
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -244,7 +289,9 @@ function formatSize(bytes) {
 
 // 处理图片加载错误
 function handleImgError(e) {
-  e.target.src = '/placeholder.png'
+  if (!e.target.src.includes('placeholder')) {
+    e.target.src = '/placeholder.svg'
+  }
 }
 
 // 监听路径变化
