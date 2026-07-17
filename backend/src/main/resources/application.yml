@@ -1,0 +1,30 @@
+server:
+  port: ${XBROWSE_PORT:8080}
+
+spring:
+  application:
+    name: x-browse
+  datasource:
+    url: jdbc:sqlite:${XBROWSE_DATA_DIR:./data}/xbrowse.db
+    driver-class-name: org.sqlite.JDBC
+  jpa:
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  web:
+    resources:
+      static-locations: classpath:/static/,file:/app/static/
+
+# x-browse 配置
+xbrowse:
+  data-dir: ${XBROWSE_DATA_DIR:./data}
+  cache-dir: ${XBROWSE_CACHE_DIR:./data/cache}
+  thumbnail-enabled: ${XBROWSE_THUMBNAIL_ENABLED:true}
+  jwt-secret: ${XBROWSE_JWT_SECRET:gbkqbkXWx1PuwHyB7QYkNZYEVR51zMLz}
+  jwt-expiration: ${XBROWSE_JWT_EXPIRATION:604800}
+
+logging:
+  level:
+    com.xbrowse: INFO
+    org.hibernate.SQL: WARN

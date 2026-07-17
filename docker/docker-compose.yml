@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # x-browse 单容器（Spring Boot + 前端静态资源）
+  xbrowse:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: xbrowse
+    restart: unless-stopped
+    environment:
+      - XBROWSE_PORT=8080
+      - XBROWSE_DATA_DIR=/app/data
+      - XBROWSE_CACHE_DIR=/app/data/cache
+      - XBROWSE_THUMBNAIL_ENABLED=${XBROWSE_THUMBNAIL_ENABLED:-true}
+      - XBROWSE_JWT_SECRET=${XBROWSE_JWT_SECRET:-xbrowse-secret-key-change-this-to-random-string}
+      - XBROWSE_JWT_EXPIRATION=${XBROWSE_JWT_EXPIRATION:-604800}
+      - XBROWSE_ADMIN_PASSWORD=${XBROWSE_ADMIN_PASSWORD:-admin123}
+      - TZ=Asia/Shanghai
+    volumes:
+      - xbrowse-data:/app/data
+    ports:
+      - "${PORT:-2401}:8080"
+
+# 数据卷
+volumes:
+  xbrowse-data:
+    driver: local

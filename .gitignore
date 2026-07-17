@@ -1,0 +1,32 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Java
+backend/target/
+*.class
+*.jar
+*.war
+
+# Node
+frontend/node_modules/
+frontend/dist/
+.npm
+
+# Docker
+docker/.env
+
+# 数据目录
+data/
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
