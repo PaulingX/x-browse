@@ -33,7 +33,7 @@ RUN npm run build
 FROM eclipse-temurin:17-jre-jammy
 WORKDIR /app
 
-RUN mkdir -p /app/data /app/data/cache
+RUN mkdir -p /app/data /app/data/cache /app/logs
 
 COPY --from=backend-builder /backend/target/*.jar app.jar
 COPY --from=frontend-builder /frontend/dist /app/static

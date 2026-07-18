@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
 
-    <property name="LOG_DIR" value="${XBROWSE_LOG_DIR:./logs}"/>
+    <springProperty scope="context" name="LOG_DIR" source="xbrowse.log-dir" defaultValue="./logs"/>
     <property name="APP_NAME" value="xbrowse"/>
 
     <!-- 控制台输出 -->
@@ -45,10 +45,6 @@
     <logger name="com.xbrowse" level="INFO" additivity="false">
         <appender-ref ref="CONSOLE"/>
         <appender-ref ref="APP_LOG"/>
-        <appender-ref ref="ERROR_LOG"/>
-    </logger>
-
-    <logger name="com.xbrowse" level="ERROR" additivity="false">
         <appender-ref ref="ERROR_LOG"/>
     </logger>
 

@@ -84,6 +84,7 @@ public class DirFileSyncService {
                 df.setIsDir(item.getIsDir());
                 df.setSize(item.getSize());
                 df.setExt(item.getExt());
+                df.setModifiedTime(item.getModified());
                 toSave.add(df);
 
                 if (!item.getIsDir() && thumb == null && isImageFile(item.getName())) {

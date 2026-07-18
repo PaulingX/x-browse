@@ -37,6 +37,9 @@ public class DirFile {
     @Column(name = "thumbnail_url", length = 1000)
     private String thumbnailUrl;
 
+    @Column(name = "modified_time")
+    private Long modifiedTime;
+
     @Column(name = "sync_time")
     private LocalDateTime syncTime;
 
@@ -61,6 +64,8 @@ public class DirFile {
     public void setExt(String ext) { this.ext = ext; }
     public String getThumbnailUrl() { return thumbnailUrl; }
     public void setThumbnailUrl(String thumbnailUrl) { this.thumbnailUrl = thumbnailUrl; }
+    public Long getModifiedTime() { return modifiedTime; }
+    public void setModifiedTime(Long modifiedTime) { this.modifiedTime = modifiedTime; }
     public LocalDateTime getSyncTime() { return syncTime; }
     public void setSyncTime(LocalDateTime syncTime) { this.syncTime = syncTime; }
 }

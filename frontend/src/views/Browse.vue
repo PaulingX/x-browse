@@ -4,6 +4,7 @@
     <van-nav-bar :title="currentDirName" left-arrow @click-left="goBack" fixed placeholder>
       <template #right>
         <van-icon name="replay" size="20" @click="refresh" />
+        <van-icon name="sort" size="20" style="margin-left: 12px" @click="cycleSortMode" />
         <van-icon name="grid-o" size="20" style="margin-left: 12px" @click="toggleViewMode" />
       </template>
     </van-nav-bar>
@@ -32,6 +33,10 @@
         background="transparent"
         :clearable="true"
       />
+      <div class="sort-indicator" @click="cycleSortMode">
+        <van-icon name="sort" size="14" />
+        <span>{{ sortLabel }}</span>
+      </div>
     </div>
 
     <!-- 文件列表 - 网格模式 -->
@@ -148,6 +153,7 @@ const searchResults = ref([])
 const searching = ref(false)
 const sentinelRef = ref(null)
 const showBackButton = ref(false)
+const sortMode = ref(localStorage.getItem('xbrowse_sort') || 'name_asc')
 let searchTimer = null
 let dirObserver = null
 let dirObserverTimer = null
@@ -177,8 +183,16 @@ const currentDirName = computed(() => {
 })
 
 const displayFiles = computed(() => {
-  if (!searchText.value) return files.value
-  return searchResults.value
+  let list = searchText.value ? searchResults.value : files.value
+  const [field, dir] = sortMode.value.split('_')
+  const mul = dir === 'asc' ? 1 : -1
+  return [...list].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+    if (field === 'time') {
+      return ((a.modified || 0) - (b.modified || 0)) * mul
+    }
+    return a.name.localeCompare(b.name, 'zh') * mul
+  })
 })
 
 const displayImageFiles = computed(() => {
@@ -368,6 +382,18 @@ function refresh() {
 function toggleViewMode() {
   viewMode.value = viewMode.value === 'grid' ? 'waterfall' : 'grid'
 }
+
+const SORT_MODES = ['name_asc', 'name_desc', 'time_asc', 'time_desc']
+function cycleSortMode() {
+  const idx = SORT_MODES.indexOf(sortMode.value)
+  sortMode.value = SORT_MODES[(idx + 1) % SORT_MODES.length]
+  localStorage.setItem('xbrowse_sort', sortMode.value)
+}
+
+const sortLabel = computed(() => {
+  const map = { name_asc: '名称 A→Z', name_desc: '名称 Z→A', time_asc: '时间 ↑', time_desc: '时间 ↓' }
+  return map[sortMode.value]
+})
 
 function isImage(ext) {
   const exts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
@@ -698,6 +724,24 @@ onUnmounted(() => {
 
 .search-bar :deep(.van-search) {
   padding: 8px 0;
+}
+
+.sort-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  margin: 0 8px 8px;
+  font-size: 12px;
+  color: #969799;
+  background: #fff;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid #ebedf0;
+}
+
+.sort-indicator:active {
+  background: #f2f3f5;
 }
 
 .load-sentinel {

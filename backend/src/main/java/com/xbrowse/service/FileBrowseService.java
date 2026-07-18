@@ -130,9 +130,16 @@ public class FileBrowseService {
                 ? df.getParentPath() + df.getName()
                 : df.getParentPath() + "/" + df.getName();
         fi.setPath(fullPath);
+        if (df.getModifiedTime() != null) {
+            fi.setModified(df.getModifiedTime());
+        }
 
-        if (!df.getIsDir() && (isImageFile(df.getName()) || isVideoFile(df.getName()))) {
-            fi.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(fullPath));
+        if (!df.getIsDir()) {
+            if (isVideoFile(df.getName())) {
+                fi.setUrl("/api/files/stream/" + engineId + "/" + encodePath(fullPath));
+            } else if (isImageFile(df.getName())) {
+                fi.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(fullPath));
+            }
         }
 
         return fi;

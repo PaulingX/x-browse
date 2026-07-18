@@ -1,6 +1,7 @@
 package com.xbrowse.config;
 
 import com.xbrowse.dto.ApiResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -18,36 +19,30 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    /**
-     * 处理业务异常
-     */
+    private boolean isBinaryRequest(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        return uri.startsWith("/api/files/proxy/") || uri.startsWith("/api/files/stream/");
+    }
+
     @ExceptionHandler(RuntimeException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Void> handleRuntimeException(RuntimeException e) {
+    public ApiResponse<Void> handleRuntimeException(RuntimeException e, HttpServletRequest request) {
+        if (isBinaryRequest(request)) return null;
         return ApiResponse.error(400, e.getMessage());
     }
 
-    /**
-     * 处理认证异常
-     */
     @ExceptionHandler(BadCredentialsException.class)
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     public ApiResponse<Void> handleBadCredentialsException(BadCredentialsException e) {
         return ApiResponse.error(401, "用户名或密码错误");
     }
 
-    /**
-     * 处理权限不足异常
-     */
     @ExceptionHandler(AccessDeniedException.class)
     @ResponseStatus(HttpStatus.FORBIDDEN)
     public ApiResponse<Void> handleAccessDeniedException(AccessDeniedException e) {
         return ApiResponse.error(403, "权限不足");
     }
 
-    /**
-     * 处理参数校验异常
-     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleValidationException(MethodArgumentNotValidException e) {
@@ -57,12 +52,10 @@ public class GlobalExceptionHandler {
         return ApiResponse.error(400, message);
     }
 
-    /**
-     * 处理其他异常
-     */
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public ApiResponse<Void> handleException(Exception e) {
+    public ApiResponse<Void> handleException(Exception e, HttpServletRequest request) {
+        if (isBinaryRequest(request)) return null;
         return ApiResponse.error(500, "服务器内部错误");
     }
 }

@@ -49,6 +49,15 @@
       >
         您的浏览器不支持视频播放
       </video>
+      <div class="speed-controls" v-show="showToolbar">
+        <span
+          v-for="s in speeds"
+          :key="s"
+          class="speed-btn"
+          :class="{ active: playbackSpeed === s }"
+          @click="setSpeed(s)"
+        >{{ s }}x</span>
+      </div>
     </div>
 
     <!-- 底部信息栏 -->
@@ -82,6 +91,8 @@ const videoRef = ref(null)
 const swipeRef = ref(null)
 const isSwiping = ref(false)
 const swipeMode = ref('vertical')
+const playbackSpeed = ref(1)
+const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 
 const currentFile = computed(() => files.value[currentIndex.value])
 
@@ -135,6 +146,13 @@ function toggleToolbar() {
 
 function toggleSwipeMode() {
   swipeMode.value = swipeMode.value === 'vertical' ? 'horizontal' : 'vertical'
+}
+
+function setSpeed(speed) {
+  playbackSpeed.value = speed
+  if (videoRef.value) {
+    videoRef.value.playbackRate = speed
+  }
 }
 
 function goBack() {
@@ -313,13 +331,38 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
 }
 
 .video-player {
   max-width: 100%;
-  max-height: 100%;
+  max-height: calc(100% - 48px);
+}
+
+.speed-controls {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.speed-btn {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.speed-btn:hover {
+  color: white;
+}
+
+.speed-btn.active {
+  color: #1989fa;
+  background: rgba(25, 137, 250, 0.2);
 }
 
 .viewer-info {

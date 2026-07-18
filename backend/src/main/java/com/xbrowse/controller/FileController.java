@@ -86,7 +86,9 @@ public class FileController {
             fi.setPath(fullPath);
             if (df.getIsDir()) {
                 fi.setUrl(df.getThumbnailUrl());
-            } else if (fileBrowseService.isImageFile(df.getName()) || fileBrowseService.isVideoFile(df.getName())) {
+            } else if (fileBrowseService.isVideoFile(df.getName())) {
+                fi.setUrl("/api/files/stream/" + engineId + "/" + encodePath(fullPath));
+            } else if (fileBrowseService.isImageFile(df.getName())) {
                 fi.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(fullPath));
             }
             items.add(fi);
@@ -161,7 +163,7 @@ public class FileController {
     }
 
     /**
-     * 获取流媒体（用于视频播放）
+     * 获取流媒体（用于视频播放，支持 Range 请求）
      */
     @GetMapping("/stream/{engineId}/**")
     public ResponseEntity<Resource> streamFile(
@@ -170,7 +172,7 @@ public class FileController {
             HttpServletRequest request) {
         try {
             String fullPath = extractStreamPath(engineId, request.getRequestURI());
-            log.debug("流媒体播放: engineId={}, path={}", engineId, fullPath);
+            log.debug("流媒体播放: engineId={}, path={}, range={}", engineId, fullPath, range);
 
             AlistEngine engine = getEngine(engineId);
             AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
@@ -180,25 +182,74 @@ public class FileController {
                 return ResponseEntity.notFound().build();
             }
 
-            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-            if (range != null) {
-                connection.setRequestProperty("Range", range);
+            String contentType = getContentType(fullPath);
+
+            if (range == null) {
+                HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+                connection.setConnectTimeout(30000);
+                connection.setReadTimeout(30000);
+                InputStream inputStream = connection.getInputStream();
+                Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                        .body(resource);
             }
+
+            long fileSize = getFileSize(fileUrl);
+            if (fileSize <= 0) {
+                HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+                connection.setConnectTimeout(30000);
+                connection.setReadTimeout(30000);
+                InputStream inputStream = connection.getInputStream();
+                Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                        .body(resource);
+            }
+
+            long start = 0;
+            long end = fileSize - 1;
+            String rangeValue = range.replace("bytes=", "");
+            String[] parts = rangeValue.split("-");
+            start = Long.parseLong(parts[0]);
+            if (parts.length > 1 && !parts[1].isEmpty()) {
+                end = Long.parseLong(parts[1]);
+            }
+            long contentLength = end - start + 1;
+
+            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+            connection.setRequestProperty("Range", "bytes=" + start + "-" + end);
             connection.setConnectTimeout(30000);
             connection.setReadTimeout(30000);
-
             InputStream inputStream = connection.getInputStream();
             Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
 
-            String contentType = getContentType(fullPath);
-            return ResponseEntity.ok()
+            return ResponseEntity.status(206)
                     .contentType(MediaType.parseMediaType(contentType))
                     .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                    .header(HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + fileSize)
+                    .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength))
                     .body(resource);
 
         } catch (Exception e) {
             log.error("流媒体播放失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    private long getFileSize(String fileUrl) {
+        try {
+            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+            connection.setRequestMethod("HEAD");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            long size = connection.getContentLengthLong();
+            connection.disconnect();
+            return size;
+        } catch (Exception e) {
+            return -1;
         }
     }
 

@@ -1,6 +1,7 @@
 package com.xbrowse.util;
 
 import com.xbrowse.dto.FileItem;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
 import org.springframework.web.client.RestTemplate;
 
@@ -9,6 +10,7 @@ import java.util.*;
 /**
  * Alist API 客户端
  */
+@Slf4j
 public class AlistClient {
 
     private final String url;
@@ -138,10 +140,10 @@ public class AlistClient {
             if (timeStr == null || timeStr.isEmpty()) {
                 return null;
             }
-            java.time.LocalDateTime dateTime = java.time.LocalDateTime.parse(
-                    timeStr.replace(" ", "T"));
-            return dateTime.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+            java.time.OffsetDateTime odt = java.time.OffsetDateTime.parse(timeStr);
+            return odt.toInstant().toEpochMilli();
         } catch (Exception e) {
+            log.warn("解析时间失败: {}", timeStr, e);
             return null;
         }
     }
