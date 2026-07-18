@@ -67,9 +67,15 @@ public class DirFileSyncService {
     }
 
     private String syncOneDir(Long engineId, String path, AlistClient client) {
-        log.debug("同步目录: engineId={}, path={}", engineId, path);
-        List<FileItem> items = client.listFiles(path, true, 1, 1000);
-        log.debug("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
+        log.info("同步目录: engineId={}, path={}", engineId, path);
+        List<FileItem> items;
+        try {
+            items = client.listFiles(path, true, 1, 1000);
+        } catch (Exception e) {
+            log.error("获取目录列表失败: engineId={}, path={}", engineId, path, e);
+            return null;
+        }
+        log.info("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
 
         String dirThumbnail = txTemplate.execute(status -> {
             dirFileRepository.deleteByEngineIdAndParentPath(engineId, path);
@@ -97,9 +103,13 @@ public class DirFileSyncService {
 
         for (FileItem item : items) {
             if (item.getIsDir()) {
-                String subThumb = syncOneDir(engineId, item.getPath(), client);
-                if (dirThumbnail == null && subThumb != null) {
-                    dirThumbnail = subThumb;
+                try {
+                    String subThumb = syncOneDir(engineId, item.getPath(), client);
+                    if (dirThumbnail == null && subThumb != null) {
+                        dirThumbnail = subThumb;
+                    }
+                } catch (Exception e) {
+                    log.error("同步子目录失败: engineId={}, path={}", engineId, item.getPath(), e);
                 }
             }
         }

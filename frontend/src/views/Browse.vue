@@ -690,6 +690,12 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.page-container {
+  width: 100vw;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 .breadcrumb {
   position: sticky;
   top: 46px;
@@ -698,8 +704,9 @@ onUnmounted(() => {
   font-size: 13px;
   color: #969799;
   background: #f7f8fa;
-  overflow-x: auto;
+  overflow-x: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .breadcrumb-item {
@@ -720,6 +727,7 @@ onUnmounted(() => {
 .search-bar {
   padding: 0 8px;
   background: #f7f8fa;
+  overflow: hidden;
 }
 
 .search-bar :deep(.van-search) {
@@ -761,6 +769,7 @@ onUnmounted(() => {
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   padding: 12px;
+  overflow: hidden;
 }
 
 .folder-card {
@@ -771,6 +780,8 @@ onUnmounted(() => {
   border-radius: 8px;
   background: #fff;
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .folder-card:active {
@@ -787,6 +798,7 @@ onUnmounted(() => {
   overflow: hidden;
   border-radius: 8px;
   background: #f7f8fa;
+  min-width: 0;
 }
 
 .file-thumbnail {
@@ -806,6 +818,7 @@ onUnmounted(() => {
 .file-info {
   text-align: center;
   width: 100%;
+  min-width: 0;
 }
 
 .file-name {
@@ -826,6 +839,7 @@ onUnmounted(() => {
   column-count: 2;
   column-gap: 8px;
   padding: 8px;
+  overflow: hidden;
 }
 
 .waterfall-item {

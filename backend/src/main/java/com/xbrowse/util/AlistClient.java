@@ -3,6 +3,7 @@ package com.xbrowse.util;
 import com.xbrowse.dto.FileItem;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
@@ -20,7 +21,10 @@ public class AlistClient {
     public AlistClient(String url, String token) {
         this.url = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
         this.token = token;
-        this.restTemplate = new RestTemplate();
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10000);
+        factory.setReadTimeout(30000);
+        this.restTemplate = new RestTemplate(factory);
     }
 
     private HttpHeaders buildHeaders() {
@@ -37,6 +41,7 @@ public class AlistClient {
         String fullUrl = this.url + path;
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, buildHeaders());
         ResponseEntity<Map> resp = restTemplate.exchange(fullUrl, HttpMethod.POST, entity, Map.class);
+        log.debug("Alist POST {} -> status={}", path, resp.getStatusCode());
         return resp.getBody();
     }
 
