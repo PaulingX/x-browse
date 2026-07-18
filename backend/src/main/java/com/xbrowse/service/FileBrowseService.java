@@ -4,6 +4,8 @@ import com.xbrowse.dto.FileItem;
 import com.xbrowse.util.AlistClient;
 import org.springframework.stereotype.Service;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
@@ -110,6 +112,13 @@ public class FileBrowseService {
      * 编码路径用于 URL
      */
     private String encodePath(String path) {
-        return path.startsWith("/") ? path.substring(1) : path;
+        String p = path.startsWith("/") ? path.substring(1) : path;
+        String[] segments = p.split("/", -1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < segments.length; i++) {
+            if (i > 0) sb.append("/");
+            sb.append(URLEncoder.encode(segments[i], StandardCharsets.UTF_8));
+        }
+        return sb.toString();
     }
 }

@@ -49,9 +49,10 @@
             />
             <img
               v-else-if="item.url && isImage(item.ext)"
-              :src="item.url"
+              :src="getCachedImage(item.url)?.src || item.url"
               :alt="item.name"
               class="file-thumbnail"
+              @load="onThumbLoad($event, item.url)"
               @error="handleImgError"
             />
             <van-icon
@@ -100,7 +101,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 
@@ -108,6 +109,7 @@ const router = useRouter()
 const route = useRoute()
 
 const engineId = computed(() => Number(route.params.engineId))
+const rootPath = ref(route.query.path || '/')
 const currentPath = ref(route.query.path || '/')
 
 const files = ref([])
@@ -188,7 +190,7 @@ async function loadMore() {
 function handleClick(item) {
   if (item.isDir) {
     currentPath.value = item.path
-    router.replace({ query: { path: item.path } })
+    router.push({ query: { path: item.path } })
     loadFiles()
   } else if (isImage(item.ext)) {
     const index = imageFiles.value.findIndex((f) => f.name === item.name)
@@ -211,12 +213,18 @@ function openViewer(index) {
 }
 
 function goBack() {
-  if (currentPath.value === '/') {
+  if (currentPath.value === rootPath.value) {
     router.push('/')
   } else {
-    const parts = currentPath.value.split('/').filter(Boolean)
-    parts.pop()
-    currentPath.value = parts.length ? '/' + parts.join('/') : '/'
+    const rootParts = rootPath.value.split('/').filter(Boolean)
+    const curParts = currentPath.value.split('/').filter(Boolean)
+    if (curParts.length > rootParts.length) {
+      curParts.pop()
+      const parentPath = '/' + curParts.join('/')
+      currentPath.value = parentPath.startsWith(rootPath.value) ? parentPath : rootPath.value
+    } else {
+      currentPath.value = rootPath.value
+    }
     router.replace({ query: { path: currentPath.value } })
     loadFiles()
   }
@@ -274,13 +282,105 @@ function handleImgError(e) {
   e.target.style.display = 'none'
 }
 
-function preloadImages(urls) {
-  urls.forEach(url => {
-    if (url) {
-      const img = new Image()
-      img.src = url
+function onThumbLoad(e, url) {
+  if (url && !imageCache.has(url)) {
+    const img = e.target
+    const memory = estimateImageMemory(img)
+    if (cacheMemoryUsage + memory > MAX_CACHE_MEMORY) {
+      evictOldestCache(memory)
     }
-  })
+    imageCache.set(url, { img: img.cloneNode(true), memory, timestamp: Date.now() })
+    cacheMemoryUsage += memory
+    evictOverBudgetCache()
+  }
+}
+
+const imageCache = new Map()
+const MAX_CACHE_MEMORY = 100 * 1024 * 1024
+const CACHE_TTL = 30 * 60 * 1000
+let cacheMemoryUsage = 0
+let cacheTimer = null
+
+function estimateImageMemory(img) {
+  if (img.naturalWidth && img.naturalHeight) {
+    return img.naturalWidth * img.naturalHeight * 4
+  }
+  return 500 * 1024
+}
+
+function evictExpiredCache() {
+  const now = Date.now()
+  for (const [url, entry] of imageCache) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      cacheMemoryUsage -= entry.memory
+      imageCache.delete(url)
+    }
+  }
+}
+
+function evictOldestCache(needed) {
+  const entries = [...imageCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)
+  for (const [url, entry] of entries) {
+    if (cacheMemoryUsage - entry.memory + needed <= MAX_CACHE_MEMORY || imageCache.size <= 1) break
+    cacheMemoryUsage -= entry.memory
+    imageCache.delete(url)
+  }
+}
+
+function evictOverBudgetCache() {
+  if (cacheMemoryUsage <= MAX_CACHE_MEMORY) return
+  const entries = [...imageCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)
+  for (const [url, entry] of entries) {
+    if (cacheMemoryUsage <= MAX_CACHE_MEMORY * 0.8) break
+    cacheMemoryUsage -= entry.memory
+    imageCache.delete(url)
+  }
+}
+
+function getCachedImage(url) {
+  if (!url) return null
+  const entry = imageCache.get(url)
+  if (entry) {
+    entry.timestamp = Date.now()
+    return entry.img
+  }
+  return null
+}
+
+function cacheImage(url) {
+  if (!url || imageCache.has(url)) return
+  evictExpiredCache()
+  const img = new Image()
+  img.src = url
+  img.onload = () => {
+    const memory = estimateImageMemory(img)
+    if (cacheMemoryUsage + memory > MAX_CACHE_MEMORY) {
+      evictOldestCache(memory)
+    }
+    imageCache.set(url, { img, memory, timestamp: Date.now() })
+    cacheMemoryUsage += memory
+    evictOverBudgetCache()
+  }
+}
+
+function clearImageCache() {
+  for (const [, entry] of imageCache) {
+    entry.img.src = ''
+  }
+  imageCache.clear()
+  cacheMemoryUsage = 0
+  if (cacheTimer) {
+    clearInterval(cacheTimer)
+    cacheTimer = null
+  }
+}
+
+function preloadImages(urls) {
+  if (!urls || urls.length === 0) return
+  evictExpiredCache()
+  const toLoad = urls.filter(url => url && !imageCache.has(url)).slice(0, 8)
+  toLoad.forEach(url => cacheImage(url))
+  evictOverBudgetCache()
 }
 
 function preloadPageImages() {
@@ -310,10 +410,19 @@ function preloadNextPage() {
   }).catch(() => {})
 }
 
+function startCacheTimer() {
+  if (cacheTimer) clearInterval(cacheTimer)
+  cacheTimer = setInterval(() => {
+    evictExpiredCache()
+    evictOverBudgetCache()
+  }, 60 * 1000)
+}
+
 watch(
   () => route.query.path,
   (newPath) => {
     if (newPath && newPath !== currentPath.value) {
+      clearImageCache()
       currentPath.value = newPath
       loadFiles()
     }
@@ -322,6 +431,11 @@ watch(
 
 onMounted(() => {
   loadFiles()
+  startCacheTimer()
+})
+
+onUnmounted(() => {
+  clearImageCache()
 })
 </script>
 
