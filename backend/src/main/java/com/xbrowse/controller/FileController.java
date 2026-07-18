@@ -9,6 +9,7 @@ import com.xbrowse.service.DirFileSyncService;
 import com.xbrowse.service.FileBrowseService;
 import com.xbrowse.util.AlistClient;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -29,6 +30,7 @@ import java.util.Optional;
 /**
  * 文件浏览控制器
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/files")
 public class FileController {
@@ -52,6 +54,7 @@ public class FileController {
     public ApiResponse<Map<String, String>> getDirThumbnails(
             @RequestParam Long engineId,
             @RequestParam List<String> paths) {
+        log.info("获取目录预览图: engineId={}, paths={}", engineId, paths.size());
         java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
         for (String dirPath : paths) {
             String thumb = fileBrowseService.getDirThumbnail(engineId, dirPath);
@@ -68,6 +71,7 @@ public class FileController {
             @RequestParam Long engineId,
             @RequestParam String keyword,
             @RequestParam(defaultValue = "/") String parentPath) {
+        log.info("搜索文件: engineId={}, keyword={}, parentPath={}", engineId, keyword, parentPath);
         List<DirFile> dirFiles = dirFileSyncService.search(engineId, parentPath, keyword);
         List<FileItem> items = new ArrayList<>();
         for (DirFile df : dirFiles) {
@@ -95,7 +99,9 @@ public class FileController {
      */
     @PostMapping("/sync")
     public ApiResponse<String> triggerSync(@RequestParam Long engineId) {
+        log.info("手动触发同步: engineId={}", engineId);
         dirFileSyncService.syncDirectory(engineId, "/");
+        log.info("手动同步完成: engineId={}", engineId);
         return ApiResponse.success("同步完成");
     }
 
@@ -109,6 +115,7 @@ public class FileController {
             @RequestParam(defaultValue = "false") boolean refresh,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int perPage) {
+        log.debug("浏览目录: engineId={}, path={}, page={}, perPage={}", engineId, path, page, perPage);
         return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh, page, perPage));
     }
 
@@ -121,6 +128,7 @@ public class FileController {
             HttpServletRequest request) {
         try {
             String fullPath = extractProxyPath(engineId, request.getRequestURI());
+            log.debug("代理文件: engineId={}, path={}", engineId, fullPath);
             String contentType = getContentType(fullPath);
 
             AlistEngine engine = getEngine(engineId);
@@ -147,6 +155,7 @@ public class FileController {
                     .body(resource);
 
         } catch (Exception e) {
+            log.error("代理文件失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
         }
     }
@@ -161,6 +170,7 @@ public class FileController {
             HttpServletRequest request) {
         try {
             String fullPath = extractStreamPath(engineId, request.getRequestURI());
+            log.debug("流媒体播放: engineId={}, path={}", engineId, fullPath);
 
             AlistEngine engine = getEngine(engineId);
             AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
@@ -187,6 +197,7 @@ public class FileController {
                     .body(resource);
 
         } catch (Exception e) {
+            log.error("流媒体播放失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
         }
     }

@@ -10,6 +10,7 @@ services:
       - XBROWSE_PORT=8080
       - XBROWSE_DATA_DIR=/app/data
       - XBROWSE_CACHE_DIR=/app/data/cache
+      - XBROWSE_LOG_DIR=/app/logs
       - XBROWSE_THUMBNAIL_ENABLED=${XBROWSE_THUMBNAIL_ENABLED:-true}
       - XBROWSE_JWT_SECRET=${XBROWSE_JWT_SECRET:-xbrowse-secret-key-change-this-to-random-string}
       - XBROWSE_JWT_EXPIRATION=${XBROWSE_JWT_EXPIRATION:-604800}
@@ -17,10 +18,13 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - xbrowse-data:/app/data
+      - xbrowse-logs:/app/logs
     ports:
       - "${PORT:-2401}:8080"
 
 # 数据卷
 volumes:
   xbrowse-data:
+    driver: local
+  xbrowse-logs:
     driver: local

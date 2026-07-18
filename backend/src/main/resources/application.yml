@@ -25,5 +25,4 @@ xbrowse:
 
 logging:
   level:
-    com.xbrowse: INFO
-    org.hibernate.SQL: WARN
+    root: INFO

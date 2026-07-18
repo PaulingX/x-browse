@@ -53,6 +53,7 @@ public class AlistEngineService {
      */
     @Transactional
     public AlistEngineDTO addEngine(AlistEngineDTO dto) {
+        log.info("添加引擎: remark={}, url={}", dto.getRemark(), dto.getUrl());
         // 验证连接
         AlistClient client = new AlistClient(dto.getUrl(), dto.getToken());
         String userName = client.getCurrentUser();
@@ -67,6 +68,7 @@ public class AlistEngineService {
 
         // 缓存客户端
         clientCache.put(engine.getId(), client);
+        log.info("引擎添加成功: id={}, remark={}", engine.getId(), engine.getRemark());
 
         return toDTO(engine);
     }
@@ -76,6 +78,7 @@ public class AlistEngineService {
      */
     @Transactional
     public AlistEngineDTO updateEngine(Long id, AlistEngineDTO dto) {
+        log.info("更新引擎: id={}, remark={}", id, dto.getRemark());
         AlistEngine engine = engineRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("引擎不存在"));
 
@@ -103,8 +106,10 @@ public class AlistEngineService {
      */
     @Transactional
     public void deleteEngine(Long id) {
+        log.info("删除引擎: id={}", id);
         engineRepository.deleteById(id);
         clientCache.remove(id);
+        log.info("引擎删除成功: id={}", id);
     }
 
     /**
@@ -122,9 +127,11 @@ public class AlistEngineService {
      * 测试引擎连接，返回错误信息（成功时为null）
      */
     public String testConnection(AlistEngineDTO dto) {
+        log.info("测试引擎连接: url={}", dto.getUrl());
         try {
             AlistClient client = new AlistClient(dto.getUrl(), dto.getToken());
             client.getCurrentUser();
+            log.info("引擎连接测试成功: url={}", dto.getUrl());
             return null;
         } catch (Exception e) {
             String msg = e.getMessage();

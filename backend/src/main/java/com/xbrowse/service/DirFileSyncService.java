@@ -34,23 +34,29 @@ public class DirFileSyncService {
     @Scheduled(fixedDelay = 300000, initialDelay = 30000)
     public void scheduledSync() {
         log.info("开始定时同步目录文件");
+        long start = System.currentTimeMillis();
         try {
             List<Long> engineIds = engineService.listEngines().stream()
                     .map(e -> e.getId())
                     .toList();
             for (Long engineId : engineIds) {
+                log.info("开始同步引擎: engineId={}", engineId);
                 AlistClient client = engineService.getClient(engineId);
                 syncRecursive(engineId, "/", client);
+                log.info("引擎同步完成: engineId={}", engineId);
             }
-            log.info("定时同步目录文件完成");
+            log.info("定时同步目录文件完成, 耗时: {}ms", System.currentTimeMillis() - start);
         } catch (Exception e) {
-            log.error("定时同步目录文件失败", e);
+            log.error("定时同步目录文件失败, 耗时: {}ms", System.currentTimeMillis() - start, e);
         }
     }
 
     public void syncDirectory(Long engineId, String path) {
+        log.info("手动同步目录: engineId={}, path={}", engineId, path);
+        long start = System.currentTimeMillis();
         AlistClient client = engineService.getClient(engineId);
         syncRecursive(engineId, path, client);
+        log.info("手动同步完成: engineId={}, path={}, 耗时: {}ms", engineId, path, System.currentTimeMillis() - start);
     }
 
     private void syncRecursive(Long engineId, String path, AlistClient client) {
@@ -61,7 +67,9 @@ public class DirFileSyncService {
     }
 
     private String syncOneDir(Long engineId, String path, AlistClient client) {
+        log.debug("同步目录: engineId={}, path={}", engineId, path);
         List<FileItem> items = client.listFiles(path, true, 1, 1000);
+        log.debug("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
 
         String dirThumbnail = txTemplate.execute(status -> {
             dirFileRepository.deleteByEngineIdAndParentPath(engineId, path);

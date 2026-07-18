@@ -3,6 +3,7 @@ package com.xbrowse.service;
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.entity.DirFile;
 import com.xbrowse.repository.DirFileRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -15,6 +16,7 @@ import java.util.stream.Collectors;
 /**
  * 文件浏览核心服务
  */
+@Slf4j
 @Service
 public class FileBrowseService {
 
@@ -43,9 +45,10 @@ public class FileBrowseService {
      */
     public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage) {
         path = normalizePath(path);
+        log.debug("查询目录: engineId={}, path={}, page={}, perPage={}", engineId, path, page, perPage);
         Page<DirFile> pageData = dirFileRepository
                 .findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, path, PageRequest.of(page - 1, perPage));
-
+        log.debug("查询结果: engineId={}, path={}, total={}", engineId, path, pageData.getTotalElements());
         return pageData.getContent().stream()
                 .map(df -> toFileItem(df, engineId))
                 .collect(Collectors.toList());
@@ -56,6 +59,7 @@ public class FileBrowseService {
      */
     public String getDirThumbnail(Long engineId, String dirPath) {
         dirPath = normalizePath(dirPath);
+        log.debug("获取目录预览图: engineId={}, dirPath={}", engineId, dirPath);
         List<DirFile> items = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, dirPath);
 
         String firstSubDir = null;
