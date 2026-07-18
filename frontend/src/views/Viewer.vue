@@ -7,35 +7,27 @@
         <span class="viewer-title">{{ currentFile?.name }}</span>
         <span class="viewer-counter">{{ currentIndex + 1 }} / {{ files.length }}</span>
         <div class="toolbar-right">
-          <van-icon :name="swipeMode === 'vertical' ? 'arrow-left' : 'arrow-up'" size="20" color="white" style="cursor: pointer;" @click="toggleSwipeMode" />
           <van-icon name="cross" size="22" color="white" style="cursor: pointer;" @click="goBack" />
         </div>
       </div>
     </transition>
 
-    <!-- 图片查看器 - 上下滑动 -->
-    <div v-if="isImage" class="image-viewer" @click="toggleToolbar">
-      <van-swipe
-        ref="swipeRef"
-        :initial-index="currentIndex"
-        :loop="false"
-        :show-indicators="false"
-        :vertical="swipeMode === 'vertical'"
-        @change="onSwipeChange"
-        class="image-swipe"
+    <!-- 图片查看器 - 连续滚动 -->
+    <div v-if="isImage" ref="scrollContainer" class="image-scroll" @scroll="onScroll">
+      <div
+        v-for="(file, index) in files"
+        :key="file.name + index"
+        :ref="el => { if (index === currentIndex) currentImageRef = el }"
+        class="image-item"
       >
-        <van-swipe-item v-for="(file, index) in files" :key="file.name + index">
-          <div class="image-container">
-            <img
-              :src="file.url"
-              :alt="file.name"
-              class="viewer-image"
-              @load="onImageLoad"
-              @error="onImageError"
-            />
-          </div>
-        </van-swipe-item>
-      </van-swipe>
+        <img
+          :src="file.url"
+          :alt="file.name"
+          class="scroll-image"
+          @error="onImageError"
+          loading="lazy"
+        />
+      </div>
     </div>
 
     <!-- 视频播放器 -->
@@ -73,7 +65,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 
@@ -88,9 +80,8 @@ const files = ref([])
 const loading = ref(true)
 const showToolbar = ref(true)
 const videoRef = ref(null)
-const swipeRef = ref(null)
-const isSwiping = ref(false)
-const swipeMode = ref('vertical')
+const scrollContainer = ref(null)
+const currentImageRef = ref(null)
 const playbackSpeed = ref(1)
 const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 
@@ -99,6 +90,8 @@ const currentFile = computed(() => files.value[currentIndex.value])
 const isImage = computed(() => {
   return currentFile.value && isImageExt(currentFile.value.ext)
 })
+
+let scrollLock = false
 
 async function loadFiles() {
   loading.value = true
@@ -128,10 +121,7 @@ async function loadFiles() {
     }
     files.value = allFiles
     nextTick(() => {
-      if (swipeRef.value && currentIndex.value > 0) {
-        swipeRef.value.swipeTo(currentIndex.value)
-      }
-      preloadAdjacentImages()
+      scrollToIndex(currentIndex.value)
     })
   } catch (error) {
     console.error('加载文件列表失败:', error)
@@ -140,12 +130,39 @@ async function loadFiles() {
   }
 }
 
-function toggleToolbar() {
-  showToolbar.value = !showToolbar.value
+function scrollToIndex(index) {
+  if (!scrollContainer.value) return
+  const items = scrollContainer.value.children
+  if (items[index]) {
+    items[index].scrollIntoView({ behavior: 'instant' })
+  }
 }
 
-function toggleSwipeMode() {
-  swipeMode.value = swipeMode.value === 'vertical' ? 'horizontal' : 'vertical'
+let scrollTimer = null
+function onScroll() {
+  if (!scrollContainer.value) return
+  const container = scrollContainer.value
+  const scrollTop = container.scrollTop
+  const children = container.children
+  let closest = 0
+  let minDist = Infinity
+  for (let i = 0; i < children.length; i++) {
+    const rect = children[i].getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+    const dist = Math.abs(rect.top - containerRect.top)
+    if (dist < minDist) {
+      minDist = dist
+      closest = i
+    }
+  }
+  scrollLock = true
+  currentIndex.value = closest
+  clearTimeout(scrollTimer)
+  scrollTimer = setTimeout(() => { scrollLock = false }, 100)
+}
+
+function toggleToolbar() {
+  showToolbar.value = !showToolbar.value
 }
 
 function setSpeed(speed) {
@@ -159,39 +176,9 @@ function goBack() {
   router.back()
 }
 
-function onSwipeChange(index) {
-  isSwiping.value = true
-  currentIndex.value = index
-  preloadAdjacentImages()
-  setTimeout(() => { isSwiping.value = false }, 50)
-}
-
-watch(currentIndex, (newIndex) => {
-  if (!isSwiping.value && swipeRef.value) {
-    swipeRef.value.swipeTo(newIndex)
-  }
-})
-
-function onImageLoad() {
-  preloadAdjacentImages()
-}
-
 function onImageError(e) {
   if (!e.target.src.includes('placeholder')) {
     e.target.src = '/placeholder.svg'
-  }
-}
-
-function preloadAdjacentImages() {
-  const range = 2
-  for (let i = currentIndex.value - range; i <= currentIndex.value + range; i++) {
-    if (i >= 0 && i < files.value.length && i !== currentIndex.value) {
-      const file = files.value[i]
-      if (file?.url) {
-        const img = new Image()
-        img.src = file.url
-      }
-    }
   }
 }
 
@@ -218,14 +205,15 @@ function formatSize(bytes) {
 }
 
 function handleKeydown(e) {
+  if (!scrollContainer.value) return
   switch (e.key) {
     case 'ArrowUp':
       e.preventDefault()
-      if (currentIndex.value > 0) currentIndex.value--
+      if (currentIndex.value > 0) scrollToIndex(currentIndex.value - 1)
       break
     case 'ArrowDown':
       e.preventDefault()
-      if (currentIndex.value < files.value.length - 1) currentIndex.value++
+      if (currentIndex.value < files.value.length - 1) scrollToIndex(currentIndex.value + 1)
       break
     case 'Escape':
       goBack()
@@ -236,13 +224,6 @@ function handleKeydown(e) {
 let wheelTimer = null
 function handleWheel(e) {
   e.preventDefault()
-  if (wheelTimer) return
-  wheelTimer = setTimeout(() => { wheelTimer = null }, 300)
-  if (e.deltaY > 0) {
-    if (currentIndex.value < files.value.length - 1) currentIndex.value++
-  } else if (e.deltaY < 0) {
-    if (currentIndex.value > 0) currentIndex.value--
-  }
 }
 
 onMounted(() => {
@@ -255,6 +236,7 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
   document.removeEventListener('wheel', handleWheel)
   if (wheelTimer) clearTimeout(wheelTimer)
+  if (scrollTimer) clearTimeout(scrollTimer)
 })
 </script>
 
@@ -304,27 +286,25 @@ onUnmounted(() => {
   margin-left: auto;
 }
 
-.image-viewer {
+.image-scroll {
   width: 100%;
   height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: y mandatory;
 }
 
-.image-swipe {
-  height: 100%;
-}
-
-.image-container {
+.image-item {
   width: 100%;
-  height: 100%;
+  scroll-snap-align: start;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.viewer-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+.scroll-image {
+  width: 100%;
+  display: block;
 }
 
 .video-viewer {
