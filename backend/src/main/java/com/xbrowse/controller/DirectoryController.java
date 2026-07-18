@@ -39,14 +39,6 @@ public class DirectoryController {
     }
 
     /**
-     * 获取启用缓存的目录列表
-     */
-    @GetMapping("/cache-enabled")
-    public ApiResponse<List<BrowseDirectoryDTO>> listCacheEnabled() {
-        return ApiResponse.success(directoryService.listCacheEnabled());
-    }
-
-    /**
      * 添加目录（仅管理员）
      */
     @PostMapping

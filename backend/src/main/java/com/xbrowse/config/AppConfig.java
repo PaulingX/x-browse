@@ -16,12 +16,6 @@ public class AppConfig {
     private String dataDir;
 
     /**
-     * 缓存目录
-     */
-    @Value("${xbrowse.cache-dir:./data/cache}")
-    private String cacheDir;
-
-    /**
      * 缩略图开关
      */
     @Value("${xbrowse.thumbnail-enabled:true}")
@@ -42,10 +36,6 @@ public class AppConfig {
     // Getters
     public String getDataDir() {
         return dataDir;
-    }
-
-    public String getCacheDir() {
-        return cacheDir;
     }
 
     public Boolean getThumbnailEnabled() {

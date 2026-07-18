@@ -20,7 +20,7 @@ frontend/dist/
 docker/.env
 
 # 数据目录
-data/
+backend/data/
 *.db
 
 # OS

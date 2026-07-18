@@ -20,11 +20,6 @@ public interface BrowseDirectoryRepository extends JpaRepository<BrowseDirectory
     List<BrowseDirectory> findByEngineId(Long engineId);
 
     /**
-     * 查询启用缓存的目录
-     */
-    List<BrowseDirectory> findByCacheEnabledTrue();
-
-    /**
      * 检查目录是否已存在
      */
     boolean existsByEngineIdAndPath(Long engineId, String path);

@@ -48,8 +48,8 @@
               color="#1989fa"
             />
             <img
-              v-else-if="item.thumbnail"
-              :src="item.thumbnail"
+              v-else-if="item.url && isImage(item.ext)"
+              :src="item.url"
               :alt="item.name"
               class="file-thumbnail"
               @error="handleImgError"
@@ -77,7 +77,7 @@
         class="waterfall-item"
         @click="openViewer(index)"
       >
-        <img :src="item.thumbnail || item.url" :alt="item.name" loading="lazy" />
+        <img :src="item.url" :alt="item.name" loading="lazy" />
       </div>
     </div>
 
@@ -118,7 +118,6 @@ const page = ref(1)
 const perPage = ref(20)
 const hasMore = ref(true)
 
-// 计算属性
 const currentDirName = computed(() => {
   const parts = currentPath.value.split('/').filter(Boolean)
   return parts[parts.length - 1] || '根目录'
@@ -136,7 +135,6 @@ const imageFiles = computed(() => {
   return files.value.filter((f) => !f.isDir && isImage(f.ext))
 })
 
-// 加载文件列表
 async function loadFiles() {
   loading.value = true
   page.value = 1
@@ -153,6 +151,8 @@ async function loadFiles() {
     if (res.code === 200) {
       files.value = res.data
       hasMore.value = res.data.length >= perPage.value
+      preloadPageImages()
+      preloadNextPage()
     }
   } catch (error) {
     console.error('加载文件列表失败:', error)
@@ -161,10 +161,8 @@ async function loadFiles() {
   }
 }
 
-// 加载更多（无限滚动）
 async function loadMore() {
   if (loadingMore.value || !hasMore.value) return
-  
   loadingMore.value = true
   page.value++
   try {
@@ -187,26 +185,20 @@ async function loadMore() {
   }
 }
 
-// 点击文件/目录
 function handleClick(item) {
   if (item.isDir) {
-    // 进入子目录
     currentPath.value = item.path
-    router.replace({
-      query: { path: item.path }
-    })
+    router.replace({ query: { path: item.path } })
     loadFiles()
   } else if (isImage(item.ext)) {
-    // 打开图片查看器
     const index = imageFiles.value.findIndex((f) => f.name === item.name)
-    openViewer(index)
+    openViewer(index >= 0 ? index : 0)
   } else if (isVideo(item.ext)) {
-    // 打开视频播放
-    openViewer(0)
+    const index = files.value.findIndex((f) => f.name === item.name)
+    openViewer(index >= 0 ? index : 0)
   }
 }
 
-// 打开查看器
 function openViewer(index) {
   router.push({
     name: 'Viewer',
@@ -218,7 +210,6 @@ function openViewer(index) {
   })
 }
 
-// 返回上一级
 function goBack() {
   if (currentPath.value === '/') {
     router.push('/')
@@ -231,50 +222,42 @@ function goBack() {
   }
 }
 
-// 导航到指定路径
 function navigateTo(path) {
   currentPath.value = path
   router.replace({ query: { path } })
   loadFiles()
 }
 
-// 刷新
 function refresh() {
   loadFiles()
 }
 
-// 切换视图模式
 function toggleViewMode() {
   viewMode.value = viewMode.value === 'grid' ? 'waterfall' : 'grid'
 }
 
-// 判断是否为图片
 function isImage(ext) {
   const exts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
   return exts.includes(ext?.toLowerCase())
 }
 
-// 判断是否为视频
 function isVideo(ext) {
   const exts = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm']
   return exts.includes(ext?.toLowerCase())
 }
 
-// 获取文件图标
 function getFileIcon(ext) {
   if (isImage(ext)) return 'photo-o'
   if (isVideo(ext)) return 'video-o'
   return 'description'
 }
 
-// 获取文件颜色
 function getFileColor(ext) {
   if (isImage(ext)) return '#07c160'
   if (isVideo(ext)) return '#ff976a'
   return '#969799'
 }
 
-// 格式化文件大小
 function formatSize(bytes) {
   if (!bytes) return ''
   const units = ['B', 'KB', 'MB', 'GB']
@@ -287,14 +270,46 @@ function formatSize(bytes) {
   return `${size.toFixed(1)} ${units[index]}`
 }
 
-// 处理图片加载错误
 function handleImgError(e) {
-  if (!e.target.src.includes('placeholder')) {
-    e.target.src = '/placeholder.svg'
-  }
+  e.target.style.display = 'none'
 }
 
-// 监听路径变化
+function preloadImages(urls) {
+  urls.forEach(url => {
+    if (url) {
+      const img = new Image()
+      img.src = url
+    }
+  })
+}
+
+function preloadPageImages() {
+  const urls = files.value
+    .filter(f => !f.isDir && f.url && isImage(f.ext))
+    .map(f => f.url)
+  preloadImages(urls)
+}
+
+function preloadNextPage() {
+  if (!hasMore.value) return
+  const nextPage = page.value + 1
+  api.get('/api/files/list', {
+    params: {
+      engineId: engineId.value,
+      path: currentPath.value,
+      page: nextPage,
+      perPage: perPage.value
+    }
+  }).then(res => {
+    if (res.code === 200) {
+      const urls = res.data
+        .filter(f => !f.isDir && f.url && isImage(f.ext))
+        .map(f => f.url)
+      preloadImages(urls)
+    }
+  }).catch(() => {})
+}
+
 watch(
   () => route.query.path,
   (newPath) => {
@@ -315,36 +330,77 @@ onMounted(() => {
   position: sticky;
   top: 46px;
   z-index: 10;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #969799;
+  background: #f7f8fa;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.breadcrumb-item {
+  color: #1989fa;
+  cursor: pointer;
+}
+
+.breadcrumb-item.active {
+  color: #323233;
+  font-weight: 500;
+}
+
+.breadcrumb-separator {
+  margin: 0 4px;
+  color: #dcdee0;
 }
 
 .grid-layout {
-  padding-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 12px;
+}
+
+.folder-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 4px;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.folder-card:active {
+  background: #f2f3f5;
 }
 
 .file-icon {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto 12px;
+  width: 100%;
+  aspect-ratio: 1;
+  margin-bottom: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #f7f8fa;
 }
 
 .file-thumbnail {
-  width: 48px;
-  height: 48px;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  border-radius: 8px;
 }
 
 .file-info {
   text-align: center;
+  width: 100%;
 }
 
 .file-name {
-  font-size: 13px;
+  font-size: 12px;
   color: #323233;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -355,7 +411,51 @@ onMounted(() => {
   color: #969799;
 }
 
-.breadcrumb-item.active {
-  font-weight: 500;
+.waterfall {
+  column-count: 2;
+  column-gap: 8px;
+  padding: 8px;
+}
+
+.waterfall-item {
+  break-inside: avoid;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.waterfall-item img {
+  width: 100%;
+  display: block;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 80px 0;
+  color: #969799;
+}
+
+.loading-container {
+  display: flex;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #1989fa;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  z-index: 100;
 }
 </style>

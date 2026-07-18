@@ -4,21 +4,20 @@ import com.xbrowse.dto.ApiResponse;
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.entity.AlistEngine;
 import com.xbrowse.repository.AlistEngineRepository;
-import com.xbrowse.service.CacheService;
 import com.xbrowse.service.FileBrowseService;
 import com.xbrowse.util.AlistClient;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.File;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 
@@ -30,26 +29,16 @@ import java.util.Optional;
 public class FileController {
 
     private final FileBrowseService fileBrowseService;
-    private final CacheService cacheService;
     private final AlistEngineRepository engineRepository;
 
     public FileController(FileBrowseService fileBrowseService,
-                          CacheService cacheService,
                           AlistEngineRepository engineRepository) {
         this.fileBrowseService = fileBrowseService;
-        this.cacheService = cacheService;
         this.engineRepository = engineRepository;
     }
 
     /**
      * 浏览目录
-     *
-     * @param engineId 引擎 ID
-     * @param path     目录路径
-     * @param refresh  是否刷新缓存
-     * @param page     页码（从1开始）
-     * @param perPage  每页数量（默认20）
-     * @return 文件列表
      */
     @GetMapping("/list")
     public ApiResponse<List<FileItem>> listFiles(
@@ -64,13 +53,13 @@ public class FileController {
     /**
      * 代理获取文件（用于跨域或需要认证的文件）
      */
-    @GetMapping("/proxy/{type}/{engineId}/**")
+    @GetMapping("/proxy/{engineId}/**")
     public ResponseEntity<Resource> proxyFile(
-            @PathVariable String type,
             @PathVariable Long engineId,
             HttpServletRequest request) {
         try {
-            String fullPath = extractPathFromUrl(type, engineId, request.getRequestURI());
+            String fullPath = extractProxyPath(engineId, request.getRequestURI());
+            String contentType = getContentType(fullPath);
 
             AlistEngine engine = getEngine(engineId);
             AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
@@ -82,7 +71,6 @@ public class FileController {
 
             HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
             connection.setRequestMethod("GET");
-            String contentType = getContentType(fullPath);
             connection.setConnectTimeout(30000);
             connection.setReadTimeout(30000);
 
@@ -105,40 +93,6 @@ public class FileController {
     }
 
     /**
-     * 获取本地缓存文件
-     */
-    @GetMapping("/cache/{type}/{engineId}/**")
-    public ResponseEntity<Resource> getCacheFile(
-            @PathVariable String type,
-            @PathVariable Long engineId,
-            HttpServletRequest request) {
-        try {
-            String fullPath = extractPathFromUrl(type, engineId, request.getRequestURI());
-            String localPath = fileBrowseService.getLocalCachePath(engineId, fullPath);
-
-            if (localPath == null) {
-                return ResponseEntity.notFound().build();
-            }
-
-            File file = new File(localPath);
-            if (!file.exists()) {
-                return ResponseEntity.notFound().build();
-            }
-
-            Resource resource = new FileSystemResource(file);
-            String contentType = getContentType(localPath);
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
-                    .body(resource);
-
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    /**
      * 获取流媒体（用于视频播放）
      */
     @GetMapping("/stream/{engineId}/**")
@@ -148,17 +102,30 @@ public class FileController {
             HttpServletRequest request) {
         try {
             String fullPath = extractStreamPath(engineId, request.getRequestURI());
-            String localPath = fileBrowseService.getLocalCachePath(engineId, fullPath);
 
-            if (localPath != null) {
-                File file = new File(localPath);
-                return streamLocalFile(file, range);
-            } else {
-                AlistEngine engine = getEngine(engineId);
-                AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
-                String fileUrl = client.getFileUrl(fullPath);
-                return streamRemoteFile(fileUrl, range, fullPath);
+            AlistEngine engine = getEngine(engineId);
+            AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
+            String fileUrl = client.getFileUrl(fullPath);
+
+            if (fileUrl == null) {
+                return ResponseEntity.notFound().build();
             }
+
+            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+            if (range != null) {
+                connection.setRequestProperty("Range", range);
+            }
+            connection.setConnectTimeout(30000);
+            connection.setReadTimeout(30000);
+
+            InputStream inputStream = connection.getInputStream();
+            Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
+
+            String contentType = getContentType(fullPath);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                    .body(resource);
 
         } catch (Exception e) {
             return ResponseEntity.internalServerError().build();
@@ -173,45 +140,12 @@ public class FileController {
         return engineOpt.get();
     }
 
-    private ResponseEntity<Resource> streamLocalFile(File file, String range) {
-        Resource resource = new FileSystemResource(file);
-        String contentType = getContentType(file.getName());
-
-        return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(contentType))
-                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                .body(resource);
-    }
-
-    private ResponseEntity<Resource> streamRemoteFile(String fileUrl, String range, String fileName) {
-        try {
-            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-            if (range != null) {
-                connection.setRequestProperty("Range", range);
-            }
-            connection.setConnectTimeout(30000);
-            connection.setReadTimeout(30000);
-
-            InputStream inputStream = connection.getInputStream();
-            Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
-
-            String contentType = getContentType(fileName);
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                    .body(resource);
-
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    private String extractPathFromUrl(String type, Long engineId, String uri) {
-        String prefix = "/api/files/proxy/" + type + "/" + engineId + "/";
+    private String extractProxyPath(Long engineId, String uri) {
+        String prefix = "/api/files/proxy/" + engineId + "/";
         if (uri.startsWith(prefix)) {
             String encoded = uri.substring(prefix.length());
-            // 反转 encodePath: 直接还原为 /path
-            return "/" + encoded;
+            String decoded = URLDecoder.decode(encoded, StandardCharsets.UTF_8);
+            return "/" + decoded;
         }
         return "/";
     }
@@ -220,7 +154,8 @@ public class FileController {
         String prefix = "/api/files/stream/" + engineId + "/";
         if (uri.startsWith(prefix)) {
             String encoded = uri.substring(prefix.length());
-            return "/" + encoded;
+            String decoded = URLDecoder.decode(encoded, StandardCharsets.UTF_8);
+            return "/" + decoded;
         }
         return "/";
     }

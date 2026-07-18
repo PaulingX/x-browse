@@ -20,7 +20,6 @@
           <div class="dir-info">
             <span>{{ getEngineName(dir.engineId) }} - {{ dir.path }}</span>
             <div class="dir-tags">
-              <van-tag v-if="dir.cacheEnabled" type="success" size="small">已缓存</van-tag>
               <van-tag v-if="dir.thumbnailEnabled" type="primary" size="small">缩略图</van-tag>
             </div>
           </div>
@@ -71,11 +70,6 @@
               label="显示名称"
               placeholder="如：我的相册"
             />
-            <van-field label="启用缓存">
-              <template #input>
-                <van-switch v-model="form.cacheEnabled" size="20" />
-              </template>
-            </van-field>
             <van-field label="缩略图">
               <template #input>
                 <van-switch v-model="form.thumbnailEnabled" size="20" />
@@ -172,7 +166,6 @@ const form = ref({
   engineId: null,
   path: '',
   name: '',
-  cacheEnabled: false,
   thumbnailEnabled: true
 })
 
@@ -287,7 +280,6 @@ function editDir(dir) {
     engineId: dir.engineId,
     path: dir.path,
     name: dir.name || '',
-    cacheEnabled: dir.cacheEnabled,
     thumbnailEnabled: dir.thumbnailEnabled
   }
   showAdd.value = true
@@ -326,7 +318,7 @@ async function onSubmit() {
       showToast(editingDir.value ? '更新成功' : '添加成功')
       showAdd.value = false
       editingDir.value = null
-      form.value = { engineId: null, path: '', name: '', cacheEnabled: false, thumbnailEnabled: true }
+      form.value = { engineId: null, path: '', name: '', thumbnailEnabled: true }
       loadData()
     }
   } catch (error) {

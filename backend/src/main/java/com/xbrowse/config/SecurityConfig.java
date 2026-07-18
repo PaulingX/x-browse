@@ -42,6 +42,8 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // 登录
                 .requestMatchers("/api/auth/login").permitAll()
+                // 文件代理（<img> <video> 等标签无法携带 Authorization header）
+                .requestMatchers("/api/files/proxy/**").permitAll()
                 // 静态资源和前端页面
                 .requestMatchers("/", "/assets/**", "/favicon.ico", "/*.html", "/*.js", "/*.css", "/*.ico", "/*.svg", "/*.png", "/*.jpg").permitAll()
                 // Actuator

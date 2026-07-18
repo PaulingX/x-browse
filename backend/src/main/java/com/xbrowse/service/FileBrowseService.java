@@ -1,15 +1,10 @@
 package com.xbrowse.service;
 
-import com.xbrowse.config.AppConfig;
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.util.AlistClient;
 import org.springframework.stereotype.Service;
 
-import java.io.File;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * 文件浏览核心服务
@@ -18,7 +13,6 @@ import java.util.stream.Collectors;
 public class FileBrowseService {
 
     private final AlistEngineService engineService;
-    private final AppConfig appConfig;
 
     /**
      * 图片扩展名
@@ -34,64 +28,29 @@ public class FileBrowseService {
             "mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"
     );
 
-    public FileBrowseService(AlistEngineService engineService, AppConfig appConfig) {
+    public FileBrowseService(AlistEngineService engineService) {
         this.engineService = engineService;
-        this.appConfig = appConfig;
     }
 
     /**
      * 浏览目录
-     *
-     * @param engineId 引擎 ID
-     * @param path     目录路径
-     * @param refresh  是否刷新缓存
-     * @param page     页码（从1开始）
-     * @param perPage  每页数量
-     * @return 文件列表
      */
     public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage) {
         AlistClient client = engineService.getClient(engineId);
-
-        // 标准化路径
         path = normalizePath(path);
-
-        // 获取文件列表（分页）
         List<FileItem> items = client.listFiles(path, refresh, page, perPage);
-
-        // 填充缩略图和预览 URL（使用代理，避免 CORS 问题）
         for (FileItem item : items) {
             enrichFileItem(item, engineId);
         }
-
         return items;
     }
 
     /**
      * 获取文件预览 URL
-     *
-     * @param engineId 引擎 ID
-     * @param filePath 文件路径
-     * @return 预览 URL
      */
     public String getFilePreviewUrl(Long engineId, String filePath) {
         AlistClient client = engineService.getClient(engineId);
         return client.getFileUrl(filePath);
-    }
-
-    /**
-     * 获取本地缓存文件路径
-     *
-     * @param engineId 引擎 ID
-     * @param filePath Alist 文件路径
-     * @return 本地缓存文件路径，如果不存在返回 null
-     */
-    public String getLocalCachePath(Long engineId, String filePath) {
-        String cachePath = buildCachePath(engineId, filePath);
-        File cacheFile = new File(cachePath);
-        if (cacheFile.exists()) {
-            return cachePath;
-        }
-        return null;
     }
 
     /**
@@ -127,8 +86,7 @@ public class FileBrowseService {
         String fileName = item.getName();
 
         if (isImageFile(fileName) || isVideoFile(fileName)) {
-            item.setThumbnail("/api/files/proxy/thumb/" + engineId + "/" + encodePath(item.getPath()));
-            item.setUrl("/api/files/proxy/file/" + engineId + "/" + encodePath(item.getPath()));
+            item.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(item.getPath()));
         }
     }
 
@@ -142,7 +100,6 @@ public class FileBrowseService {
         if (!path.startsWith("/")) {
             path = "/" + path;
         }
-        // 移除末尾的斜杠（根目录除外）
         if (path.length() > 1 && path.endsWith("/")) {
             path = path.substring(0, path.length() - 1);
         }
@@ -153,32 +110,6 @@ public class FileBrowseService {
      * 编码路径用于 URL
      */
     private String encodePath(String path) {
-        // 去掉开头的 /，路径直接跟在 engineId/ 后面，由 /** 通配符捕获
         return path.startsWith("/") ? path.substring(1) : path;
-    }
-
-    /**
-     * 构建本地缓存路径
-     */
-    public String buildCachePath(Long engineId, String filePath) {
-        Path cacheDir = Paths.get(appConfig.getCacheDir(), String.valueOf(engineId));
-        // 将路径中的 / 替换为 File.separator
-        String relativePath = filePath.replace("/", File.separator);
-        if (relativePath.startsWith(File.separator)) {
-            relativePath = relativePath.substring(1);
-        }
-        return cacheDir.resolve(relativePath).toString();
-    }
-
-    /**
-     * 构建缩略图缓存路径
-     */
-    public String buildThumbnailPath(Long engineId, String filePath) {
-        String cachePath = buildCachePath(engineId, filePath);
-        int lastDotIndex = cachePath.lastIndexOf('.');
-        if (lastDotIndex > 0) {
-            return cachePath.substring(0, lastDotIndex) + "_thumb" + cachePath.substring(lastDotIndex);
-        }
-        return cachePath + "_thumb";
     }
 }

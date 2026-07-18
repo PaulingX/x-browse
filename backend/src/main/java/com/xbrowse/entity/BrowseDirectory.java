@@ -22,9 +22,6 @@ public class BrowseDirectory {
     @Column(length = 200)
     private String name;
 
-    @Column(name = "cache_enabled")
-    private Boolean cacheEnabled = false;
-
     @Column(name = "thumbnail_enabled")
     private Boolean thumbnailEnabled = true;
 
@@ -53,8 +50,6 @@ public class BrowseDirectory {
     public void setPath(String path) { this.path = path; }
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
-    public Boolean getCacheEnabled() { return cacheEnabled; }
-    public void setCacheEnabled(Boolean cacheEnabled) { this.cacheEnabled = cacheEnabled; }
     public Boolean getThumbnailEnabled() { return thumbnailEnabled; }
     public void setThumbnailEnabled(Boolean thumbnailEnabled) { this.thumbnailEnabled = thumbnailEnabled; }
     public LocalDateTime getCreateTime() { return createTime; }

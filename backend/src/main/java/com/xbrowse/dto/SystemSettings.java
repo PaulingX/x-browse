@@ -11,11 +11,6 @@ public class SystemSettings {
     private Boolean thumbnailEnabled;
 
     /**
-     * 缓存目录路径
-     */
-    private String cacheDir;
-
-    /**
      * 数据目录路径
      */
     private String dataDir;
@@ -27,14 +22,6 @@ public class SystemSettings {
 
     public void setThumbnailEnabled(Boolean thumbnailEnabled) {
         this.thumbnailEnabled = thumbnailEnabled;
-    }
-
-    public String getCacheDir() {
-        return cacheDir;
-    }
-
-    public void setCacheDir(String cacheDir) {
-        this.cacheDir = cacheDir;
     }
 
     public String getDataDir() {

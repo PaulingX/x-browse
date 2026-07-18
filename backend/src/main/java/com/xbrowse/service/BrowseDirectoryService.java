@@ -44,15 +44,6 @@ public class BrowseDirectoryService {
     }
 
     /**
-     * 获取启用缓存的目录列表
-     */
-    public List<BrowseDirectoryDTO> listCacheEnabled() {
-        return directoryRepository.findByCacheEnabledTrue().stream()
-                .map(this::toDTO)
-                .collect(Collectors.toList());
-    }
-
-    /**
      * 添加目录
      */
     @Transactional
@@ -66,7 +57,6 @@ public class BrowseDirectoryService {
         directory.setEngineId(dto.getEngineId());
         directory.setPath(dto.getPath());
         directory.setName(dto.getName());
-        directory.setCacheEnabled(dto.getCacheEnabled());
         directory.setThumbnailEnabled(dto.getThumbnailEnabled());
 
         directory = directoryRepository.save(directory);
@@ -82,7 +72,6 @@ public class BrowseDirectoryService {
                 .orElseThrow(() -> new RuntimeException("目录不存在"));
 
         directory.setName(dto.getName());
-        directory.setCacheEnabled(dto.getCacheEnabled());
         directory.setThumbnailEnabled(dto.getThumbnailEnabled());
 
         directory = directoryRepository.save(directory);
@@ -108,7 +97,6 @@ public class BrowseDirectoryService {
         dto.setEngineId(directory.getEngineId());
         dto.setPath(directory.getPath());
         dto.setName(directory.getName());
-        dto.setCacheEnabled(directory.getCacheEnabled());
         dto.setThumbnailEnabled(directory.getThumbnailEnabled());
         return dto;
     }

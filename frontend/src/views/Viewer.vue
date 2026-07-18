@@ -1,22 +1,26 @@
 <template>
   <div class="viewer-page">
     <!-- 顶部工具栏 -->
-    <div class="viewer-toolbar">
-      <van-icon name="arrow-left" size="24" color="white" @click="goBack" />
-      <span class="viewer-title">{{ files[currentIndex]?.name }}</span>
-      <span class="viewer-counter">{{ currentIndex + 1 }} / {{ files.length }}</span>
-    </div>
+    <transition name="fade">
+      <div v-show="showToolbar" class="viewer-toolbar">
+        <van-icon name="arrow-left" size="24" color="white" @click="goBack" />
+        <span class="viewer-title">{{ currentFile?.name }}</span>
+        <span class="viewer-counter">{{ currentIndex + 1 }} / {{ files.length }}</span>
+      </div>
+    </transition>
 
-    <!-- 图片查看器 -->
+    <!-- 图片查看器 - 上下滑动 -->
     <div v-if="isImage" class="image-viewer" @click="toggleToolbar">
       <van-swipe
+        ref="swipeRef"
         :initial-index="currentIndex"
-        :loop="true"
+        :loop="false"
         :show-indicators="false"
+        vertical
         @change="onSwipeChange"
         class="image-swipe"
       >
-        <van-swipe-item v-for="(file, index) in imageFiles" :key="file.name">
+        <van-swipe-item v-for="(file, index) in files" :key="file.name + index">
           <div class="image-container">
             <img
               :src="file.url"
@@ -44,17 +48,19 @@
     </div>
 
     <!-- 底部信息栏 -->
-    <div v-show="showToolbar" class="viewer-info">
-      <div class="file-details">
-        <p>文件名: {{ currentFile?.name }}</p>
-        <p>大小: {{ formatSize(currentFile?.size) }}</p>
+    <transition name="fade">
+      <div v-show="showToolbar" class="viewer-info">
+        <div class="file-details">
+          <p>{{ currentFile?.name }}</p>
+          <p>{{ formatSize(currentFile?.size) }}</p>
+        </div>
       </div>
-    </div>
+    </transition>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 
@@ -69,21 +75,15 @@ const files = ref([])
 const loading = ref(true)
 const showToolbar = ref(true)
 const videoRef = ref(null)
+const swipeRef = ref(null)
+const isSwiping = ref(false)
 
-// 计算属性
-const imageFiles = computed(() => {
-  return files.value.filter((f) => !f.isDir && isImage(f.ext))
-})
-
-const currentFile = computed(() => {
-  return files.value[currentIndex.value]
-})
+const currentFile = computed(() => files.value[currentIndex.value])
 
 const isImage = computed(() => {
   return currentFile.value && isImageExt(currentFile.value.ext)
 })
 
-// 加载文件列表
 async function loadFiles() {
   loading.value = true
   try {
@@ -94,10 +94,10 @@ async function loadFiles() {
       }
     })
     if (res.code === 200) {
-      // 过滤出媒体文件
       files.value = res.data.filter(
         (f) => !f.isDir && (isImageExt(f.ext) || isVideoExt(f.ext))
       )
+      preloadAdjacentImages()
     }
   } catch (error) {
     console.error('加载文件列表失败:', error)
@@ -106,46 +106,60 @@ async function loadFiles() {
   }
 }
 
-// 切换工具栏显示
 function toggleToolbar() {
   showToolbar.value = !showToolbar.value
 }
 
-// 返回上一页
 function goBack() {
   router.back()
 }
 
-// 轮播切换
 function onSwipeChange(index) {
+  isSwiping.value = true
   currentIndex.value = index
+  preloadAdjacentImages()
+  setTimeout(() => { isSwiping.value = false }, 50)
 }
 
-// 图片加载完成
-function onImageLoad(e) {
-  // 可以添加加载动画
+watch(currentIndex, (newIndex) => {
+  if (!isSwiping.value && swipeRef.value) {
+    swipeRef.value.swipeTo(newIndex)
+  }
+})
+
+function onImageLoad() {
+  preloadAdjacentImages()
 }
 
-// 图片加载失败
 function onImageError(e) {
   if (!e.target.src.includes('placeholder')) {
     e.target.src = '/placeholder.svg'
   }
 }
 
-// 判断是否为图片
+function preloadAdjacentImages() {
+  const range = 2
+  for (let i = currentIndex.value - range; i <= currentIndex.value + range; i++) {
+    if (i >= 0 && i < files.value.length && i !== currentIndex.value) {
+      const file = files.value[i]
+      if (file?.url) {
+        const img = new Image()
+        img.src = file.url
+      }
+    }
+  }
+}
+
 function isImageExt(ext) {
   const exts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
   return exts.includes(ext?.toLowerCase())
 }
 
-// 判断是否为视频
 function isVideoExt(ext) {
   const exts = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm']
   return exts.includes(ext?.toLowerCase())
 }
 
-// 格式化文件大小
 function formatSize(bytes) {
   if (!bytes) return ''
   const units = ['B', 'KB', 'MB', 'GB']
@@ -158,18 +172,15 @@ function formatSize(bytes) {
   return `${size.toFixed(1)} ${units[index]}`
 }
 
-// 键盘事件处理
 function handleKeydown(e) {
   switch (e.key) {
-    case 'ArrowLeft':
-      if (currentIndex.value > 0) {
-        currentIndex.value--
-      }
+    case 'ArrowUp':
+      e.preventDefault()
+      if (currentIndex.value > 0) currentIndex.value--
       break
-    case 'ArrowRight':
-      if (currentIndex.value < files.value.length - 1) {
-        currentIndex.value++
-      }
+    case 'ArrowDown':
+      e.preventDefault()
+      if (currentIndex.value < files.value.length - 1) currentIndex.value++
       break
     case 'Escape':
       goBack()
@@ -279,13 +290,20 @@ onUnmounted(() => {
   margin-bottom: 4px;
 }
 
-/* 移动端适配 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
 @media (max-width: 768px) {
   .viewer-toolbar {
     height: 44px;
     padding: 0 12px;
   }
-
   .viewer-title {
     font-size: 14px;
   }

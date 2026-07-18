@@ -31,11 +31,6 @@ public class BrowseDirectoryDTO {
     private String name;
 
     /**
-     * 是否启用本地缓存
-     */
-    private Boolean cacheEnabled = false;
-
-    /**
      * 是否自动生成缩略图
      */
     private Boolean thumbnailEnabled = true;
@@ -71,14 +66,6 @@ public class BrowseDirectoryDTO {
 
     public void setName(String name) {
         this.name = name;
-    }
-
-    public Boolean getCacheEnabled() {
-        return cacheEnabled;
-    }
-
-    public void setCacheEnabled(Boolean cacheEnabled) {
-        this.cacheEnabled = cacheEnabled;
     }
 
     public Boolean getThumbnailEnabled() {
