@@ -766,10 +766,22 @@ onUnmounted(() => {
 
 .grid-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  grid-template-columns: repeat(5, 1fr);
   gap: 8px;
   padding: 12px;
   overflow: hidden;
+}
+
+@media (max-width: 400px) {
+  .grid-layout {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 320px) {
+  .grid-layout {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 .folder-card {

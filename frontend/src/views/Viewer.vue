@@ -7,29 +7,61 @@
         <span class="viewer-title">{{ currentFile?.name }}</span>
         <span class="viewer-counter">{{ currentIndex + 1 }} / {{ files.length }}</span>
         <div class="toolbar-right">
+          <van-icon
+            :name="viewMode === 'scroll' ? 'apps-o' : 'photo-o'"
+            size="20"
+            color="white"
+            style="cursor: pointer;"
+            @click="toggleViewMode"
+          />
           <van-icon name="cross" size="22" color="white" style="cursor: pointer;" @click="goBack" />
         </div>
       </div>
     </transition>
 
-    <!-- 图片查看器 - 连续滚动 -->
-    <div v-if="isImage" ref="scrollContainer" class="image-scroll" @scroll="onScroll">
+    <!-- 图片查看器 -->
+    <template v-if="isImage">
+      <!-- 连续滚动模式 -->
       <div
-        v-for="(file, index) in files"
-        :key="file.name + index"
-        :ref="el => { if (index === currentIndex) currentImageRef = el }"
-        class="image-item"
+        v-if="viewMode === 'scroll'"
+        ref="scrollContainer"
+        class="image-scroll"
+        @scroll="onScroll"
       >
-        <span class="image-label">{{ file.name.replace(/\.[^.]+$/, '') }}</span>
-        <img
-          :src="file.url"
-          :alt="file.name"
-          class="scroll-image"
-          @error="onImageError"
-          loading="lazy"
+        <div
+          v-for="(file, index) in files"
+          :key="file.name + index"
+          class="image-item"
+        >
+          <img
+            :src="file.url"
+            :alt="file.name"
+            class="scroll-image"
+            @error="onImageError"
+            loading="lazy"
+          />
+        </div>
+      </div>
+
+      <!-- 单张滑动模式 -->
+      <div v-else class="image-swipe-view">
+        <div class="swipe-image-container">
+          <img
+            :src="currentFile?.url"
+            :alt="currentFile?.name"
+            class="swipe-image"
+            @error="onImageError"
+          />
+        </div>
+        <div
+          ref="swipeLayer"
+          class="swipe-layer"
+          @touchstart="onTouchStart"
+          @touchend="onTouchEnd"
+          @wheel="onWheel"
         />
       </div>
-    </div>
+    </template>
 
     <!-- 视频播放器 -->
     <div v-else class="video-viewer">
@@ -53,15 +85,6 @@
       </div>
     </div>
 
-    <!-- 底部信息栏 -->
-    <transition name="fade">
-      <div v-show="showToolbar" class="viewer-info">
-        <div class="file-details">
-          <p>{{ currentFile?.name }}</p>
-          <p>{{ formatSize(currentFile?.size) }}</p>
-        </div>
-      </div>
-    </transition>
   </div>
 </template>
 
@@ -82,9 +105,10 @@ const loading = ref(true)
 const showToolbar = ref(true)
 const videoRef = ref(null)
 const scrollContainer = ref(null)
-const currentImageRef = ref(null)
+const swipeLayer = ref(null)
 const playbackSpeed = ref(1)
 const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+const viewMode = ref('scroll')
 
 const currentFile = computed(() => files.value[currentIndex.value])
 
@@ -92,7 +116,7 @@ const isImage = computed(() => {
   return currentFile.value && isImageExt(currentFile.value.ext)
 })
 
-let scrollLock = false
+let scrollTimer = null
 
 async function loadFiles() {
   loading.value = true
@@ -122,12 +146,26 @@ async function loadFiles() {
     }
     files.value = allFiles
     nextTick(() => {
-      scrollToIndex(currentIndex.value)
+      if (viewMode.value === 'scroll') {
+        scrollToIndex(currentIndex.value)
+      }
     })
   } catch (error) {
     console.error('加载文件列表失败:', error)
   } finally {
     loading.value = false
+  }
+}
+
+function toggleViewMode() {
+  const prevIndex = currentIndex.value
+  if (viewMode.value === 'scroll') {
+    viewMode.value = 'swipe'
+  } else {
+    viewMode.value = 'scroll'
+    nextTick(() => {
+      scrollToIndex(prevIndex)
+    })
   }
 }
 
@@ -139,11 +177,9 @@ function scrollToIndex(index) {
   }
 }
 
-let scrollTimer = null
 function onScroll() {
   if (!scrollContainer.value) return
   const container = scrollContainer.value
-  const scrollTop = container.scrollTop
   const children = container.children
   let closest = 0
   let minDist = Infinity
@@ -156,14 +192,7 @@ function onScroll() {
       closest = i
     }
   }
-  scrollLock = true
   currentIndex.value = closest
-  clearTimeout(scrollTimer)
-  scrollTimer = setTimeout(() => { scrollLock = false }, 100)
-}
-
-function toggleToolbar() {
-  showToolbar.value = !showToolbar.value
 }
 
 function setSpeed(speed) {
@@ -193,51 +222,64 @@ function isVideoExt(ext) {
   return exts.includes(ext?.toLowerCase())
 }
 
-function formatSize(bytes) {
-  if (!bytes) return ''
-  const units = ['B', 'KB', 'MB', 'GB']
-  let index = 0
-  let size = bytes
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024
-    index++
+// 单张模式：触摸滑动
+let touchStartY = 0
+function onTouchStart(e) {
+  touchStartY = e.touches[0].clientY
+}
+function onTouchEnd(e) {
+  const dy = touchStartY - e.changedTouches[0].clientY
+  if (Math.abs(dy) > 50) {
+    if (dy > 0 && currentIndex.value < files.value.length - 1) {
+      currentIndex.value++
+    } else if (dy < 0 && currentIndex.value > 0) {
+      currentIndex.value--
+    }
   }
-  return `${size.toFixed(1)} ${units[index]}`
+}
+
+// 单张模式：鼠标滚轮
+let wheelTimer = null
+function onWheel(e) {
+  e.preventDefault()
+  if (wheelTimer) return
+  wheelTimer = setTimeout(() => { wheelTimer = null }, 300)
+  if (e.deltaY > 0 && currentIndex.value < files.value.length - 1) {
+    currentIndex.value++
+  } else if (e.deltaY < 0 && currentIndex.value > 0) {
+    currentIndex.value--
+  }
 }
 
 function handleKeydown(e) {
-  if (!scrollContainer.value) return
-  switch (e.key) {
-    case 'ArrowUp':
-      e.preventDefault()
-      if (currentIndex.value > 0) scrollToIndex(currentIndex.value - 1)
-      break
-    case 'ArrowDown':
-      e.preventDefault()
-      if (currentIndex.value < files.value.length - 1) scrollToIndex(currentIndex.value + 1)
-      break
-    case 'Escape':
-      goBack()
-      break
+  if (viewMode.value === 'swipe') {
+    switch (e.key) {
+      case 'ArrowUp':
+        e.preventDefault()
+        if (currentIndex.value > 0) currentIndex.value--
+        break
+      case 'ArrowDown':
+        e.preventDefault()
+        if (currentIndex.value < files.value.length - 1) currentIndex.value++
+        break
+      case 'Escape':
+        goBack()
+        break
+    }
+  } else {
+    if (e.key === 'Escape') goBack()
   }
-}
-
-let wheelTimer = null
-function handleWheel(e) {
-  e.preventDefault()
 }
 
 onMounted(() => {
   loadFiles()
   document.addEventListener('keydown', handleKeydown)
-  document.addEventListener('wheel', handleWheel, { passive: false })
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
-  document.removeEventListener('wheel', handleWheel)
-  if (wheelTimer) clearTimeout(wheelTimer)
   if (scrollTimer) clearTimeout(scrollTimer)
+  if (wheelTimer) clearTimeout(wheelTimer)
 })
 </script>
 
@@ -301,29 +343,44 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-}
-
-.image-label {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  color: #fff;
-  font-size: 12px;
-  background: rgba(0, 0, 0, 0.45);
-  padding: 2px 8px;
-  border-radius: 4px;
-  z-index: 1;
-  pointer-events: none;
-  max-width: 70%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .scroll-image {
   width: 100%;
   display: block;
+}
+
+.image-swipe-view {
+  width: 100%;
+  height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+.swipe-image-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.swipe-image {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.swipe-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
 }
 
 .video-viewer {
@@ -362,22 +419,6 @@ onUnmounted(() => {
 .speed-btn.active {
   color: #1989fa;
   background: rgba(25, 137, 250, 0.2);
-}
-
-.viewer-info {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 16px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.7), transparent);
-  z-index: 10;
-}
-
-.file-details p {
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 14px;
-  margin-bottom: 4px;
 }
 
 .fade-enter-active,
