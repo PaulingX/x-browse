@@ -3,7 +3,9 @@ package com.xbrowse.controller;
 import com.xbrowse.dto.ApiResponse;
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.entity.AlistEngine;
+import com.xbrowse.entity.DirFile;
 import com.xbrowse.repository.AlistEngineRepository;
+import com.xbrowse.service.DirFileSyncService;
 import com.xbrowse.service.FileBrowseService;
 import com.xbrowse.util.AlistClient;
 import jakarta.servlet.http.HttpServletRequest;
@@ -17,8 +19,11 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -29,12 +34,69 @@ import java.util.Optional;
 public class FileController {
 
     private final FileBrowseService fileBrowseService;
+    private final DirFileSyncService dirFileSyncService;
     private final AlistEngineRepository engineRepository;
 
     public FileController(FileBrowseService fileBrowseService,
+                          DirFileSyncService dirFileSyncService,
                           AlistEngineRepository engineRepository) {
         this.fileBrowseService = fileBrowseService;
+        this.dirFileSyncService = dirFileSyncService;
         this.engineRepository = engineRepository;
+    }
+
+    /**
+     * 获取目录预览图（第一个图片文件的代理 URL）
+     */
+    @GetMapping("/dir-thumbnail")
+    public ApiResponse<Map<String, String>> getDirThumbnails(
+            @RequestParam Long engineId,
+            @RequestParam List<String> paths) {
+        java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
+        for (String dirPath : paths) {
+            String thumb = fileBrowseService.getDirThumbnail(engineId, dirPath);
+            result.put(dirPath, thumb);
+        }
+        return ApiResponse.success(result);
+    }
+
+    /**
+     * 搜索文件（数据库模糊搜索）
+     */
+    @GetMapping("/search")
+    public ApiResponse<List<FileItem>> searchFiles(
+            @RequestParam Long engineId,
+            @RequestParam String keyword,
+            @RequestParam(defaultValue = "/") String parentPath) {
+        List<DirFile> dirFiles = dirFileSyncService.search(engineId, parentPath, keyword);
+        List<FileItem> items = new ArrayList<>();
+        for (DirFile df : dirFiles) {
+            FileItem fi = new FileItem();
+            fi.setName(df.getName());
+            fi.setIsDir(df.getIsDir());
+            fi.setSize(df.getSize());
+            fi.setExt(df.getExt());
+            String fullPath = df.getParentPath().endsWith("/")
+                    ? df.getParentPath() + df.getName()
+                    : df.getParentPath() + "/" + df.getName();
+            fi.setPath(fullPath);
+            if (df.getIsDir()) {
+                fi.setUrl(df.getThumbnailUrl());
+            } else if (fileBrowseService.isImageFile(df.getName()) || fileBrowseService.isVideoFile(df.getName())) {
+                fi.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(fullPath));
+            }
+            items.add(fi);
+        }
+        return ApiResponse.success(items);
+    }
+
+    /**
+     * 手动触发目录同步
+     */
+    @PostMapping("/sync")
+    public ApiResponse<String> triggerSync(@RequestParam Long engineId) {
+        dirFileSyncService.syncDirectory(engineId, "/");
+        return ApiResponse.success("同步完成");
     }
 
     /**
@@ -76,9 +138,6 @@ public class FileController {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType(contentType));
-
-            String fileName = fullPath.substring(fullPath.lastIndexOf('/') + 1);
-            headers.setContentDispositionFormData("inline", fileName);
 
             InputStream inputStream = connection.getInputStream();
             Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
@@ -179,5 +238,16 @@ public class FileController {
             case "ogg" -> "video/ogg";
             default -> "application/octet-stream";
         };
+    }
+
+    private String encodePath(String path) {
+        String p = path.startsWith("/") ? path.substring(1) : path;
+        String[] segments = p.split("/", -1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < segments.length; i++) {
+            if (i > 0) sb.append("/");
+            sb.append(URLEncoder.encode(segments[i], StandardCharsets.UTF_8));
+        }
+        return sb.toString();
     }
 }

@@ -6,6 +6,10 @@
         <van-icon name="arrow-left" size="24" color="white" @click="goBack" />
         <span class="viewer-title">{{ currentFile?.name }}</span>
         <span class="viewer-counter">{{ currentIndex + 1 }} / {{ files.length }}</span>
+        <div class="toolbar-right">
+          <van-icon :name="swipeMode === 'vertical' ? 'arrow-left' : 'arrow-up'" size="20" color="white" style="cursor: pointer;" @click="toggleSwipeMode" />
+          <van-icon name="cross" size="22" color="white" style="cursor: pointer;" @click="goBack" />
+        </div>
       </div>
     </transition>
 
@@ -16,7 +20,7 @@
         :initial-index="currentIndex"
         :loop="false"
         :show-indicators="false"
-        vertical
+        :vertical="swipeMode === 'vertical'"
         @change="onSwipeChange"
         class="image-swipe"
       >
@@ -60,7 +64,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 
@@ -77,6 +81,7 @@ const showToolbar = ref(true)
 const videoRef = ref(null)
 const swipeRef = ref(null)
 const isSwiping = ref(false)
+const swipeMode = ref('vertical')
 
 const currentFile = computed(() => files.value[currentIndex.value])
 
@@ -87,18 +92,36 @@ const isImage = computed(() => {
 async function loadFiles() {
   loading.value = true
   try {
-    const res = await api.get('/api/files/list', {
-      params: {
-        engineId: engineId.value,
-        path: currentPath.value
+    const allFiles = []
+    let page = 1
+    let hasMore = true
+    while (hasMore) {
+      const res = await api.get('/api/files/list', {
+        params: {
+          engineId: engineId.value,
+          path: currentPath.value,
+          page,
+          perPage: 100
+        }
+      })
+      if (res.code === 200) {
+        const media = res.data.filter(
+          (f) => !f.isDir && (isImageExt(f.ext) || isVideoExt(f.ext))
+        )
+        allFiles.push(...media)
+        hasMore = res.data.length >= 100
+        page++
+      } else {
+        hasMore = false
       }
-    })
-    if (res.code === 200) {
-      files.value = res.data.filter(
-        (f) => !f.isDir && (isImageExt(f.ext) || isVideoExt(f.ext))
-      )
-      preloadAdjacentImages()
     }
+    files.value = allFiles
+    nextTick(() => {
+      if (swipeRef.value && currentIndex.value > 0) {
+        swipeRef.value.swipeTo(currentIndex.value)
+      }
+      preloadAdjacentImages()
+    })
   } catch (error) {
     console.error('加载文件列表失败:', error)
   } finally {
@@ -108,6 +131,10 @@ async function loadFiles() {
 
 function toggleToolbar() {
   showToolbar.value = !showToolbar.value
+}
+
+function toggleSwipeMode() {
+  swipeMode.value = swipeMode.value === 'vertical' ? 'horizontal' : 'vertical'
 }
 
 function goBack() {
@@ -188,13 +215,28 @@ function handleKeydown(e) {
   }
 }
 
+let wheelTimer = null
+function handleWheel(e) {
+  e.preventDefault()
+  if (wheelTimer) return
+  wheelTimer = setTimeout(() => { wheelTimer = null }, 300)
+  if (e.deltaY > 0) {
+    if (currentIndex.value < files.value.length - 1) currentIndex.value++
+  } else if (e.deltaY < 0) {
+    if (currentIndex.value > 0) currentIndex.value--
+  }
+}
+
 onMounted(() => {
   loadFiles()
   document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('wheel', handleWheel, { passive: false })
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('wheel', handleWheel)
+  if (wheelTimer) clearTimeout(wheelTimer)
 })
 </script>
 
@@ -235,7 +277,13 @@ onUnmounted(() => {
 .viewer-counter {
   color: rgba(255, 255, 255, 0.8);
   font-size: 14px;
-  margin-left: 12px;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
 }
 
 .image-viewer {

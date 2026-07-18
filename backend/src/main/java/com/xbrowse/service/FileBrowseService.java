@@ -1,12 +1,16 @@
 package com.xbrowse.service;
 
 import com.xbrowse.dto.FileItem;
-import com.xbrowse.util.AlistClient;
+import com.xbrowse.entity.DirFile;
+import com.xbrowse.repository.DirFileRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 文件浏览核心服务
@@ -14,7 +18,7 @@ import java.util.*;
 @Service
 public class FileBrowseService {
 
-    private final AlistEngineService engineService;
+    private final DirFileRepository dirFileRepository;
 
     /**
      * 图片扩展名
@@ -30,29 +34,60 @@ public class FileBrowseService {
             "mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"
     );
 
-    public FileBrowseService(AlistEngineService engineService) {
-        this.engineService = engineService;
+    public FileBrowseService(DirFileRepository dirFileRepository) {
+        this.dirFileRepository = dirFileRepository;
     }
 
     /**
-     * 浏览目录
+     * 浏览目录（从数据库读取）
      */
     public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage) {
-        AlistClient client = engineService.getClient(engineId);
         path = normalizePath(path);
-        List<FileItem> items = client.listFiles(path, refresh, page, perPage);
-        for (FileItem item : items) {
-            enrichFileItem(item, engineId);
-        }
-        return items;
+        Page<DirFile> pageData = dirFileRepository
+                .findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, path, PageRequest.of(page - 1, perPage));
+
+        return pageData.getContent().stream()
+                .map(df -> toFileItem(df, engineId))
+                .collect(Collectors.toList());
     }
 
     /**
-     * 获取文件预览 URL
+     * 获取目录预览图（第一个图片文件的代理 URL）
      */
-    public String getFilePreviewUrl(Long engineId, String filePath) {
-        AlistClient client = engineService.getClient(engineId);
-        return client.getFileUrl(filePath);
+    public String getDirThumbnail(Long engineId, String dirPath) {
+        dirPath = normalizePath(dirPath);
+        List<DirFile> items = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, dirPath);
+
+        String firstSubDir = null;
+        for (DirFile df : items) {
+            if (df.getIsDir()) {
+                if (firstSubDir == null) {
+                    firstSubDir = df.getParentPath().endsWith("/")
+                            ? df.getParentPath() + df.getName()
+                            : df.getParentPath() + "/" + df.getName();
+                }
+                continue;
+            }
+            if (isImageFile(df.getName())) {
+                String fullPath = df.getParentPath().endsWith("/")
+                        ? df.getParentPath() + df.getName()
+                        : df.getParentPath() + "/" + df.getName();
+                return "/api/files/proxy/" + engineId + "/" + encodePath(fullPath);
+            }
+        }
+
+        if (firstSubDir != null) {
+            List<DirFile> subItems = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, firstSubDir);
+            for (DirFile df : subItems) {
+                if (!df.getIsDir() && isImageFile(df.getName())) {
+                    String fullPath = df.getParentPath().endsWith("/")
+                            ? df.getParentPath() + df.getName()
+                            : df.getParentPath() + "/" + df.getName();
+                    return "/api/files/proxy/" + engineId + "/" + encodePath(fullPath);
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -78,18 +113,25 @@ public class FileBrowseService {
     }
 
     /**
-     * 填充文件项的额外信息（缩略图、预览 URL）
+     * DirFile 实体转 FileItem DTO
      */
-    private void enrichFileItem(FileItem item, Long engineId) {
-        if (item.getIsDir()) {
-            return;
+    private FileItem toFileItem(DirFile df, Long engineId) {
+        FileItem fi = new FileItem();
+        fi.setName(df.getName());
+        fi.setIsDir(df.getIsDir());
+        fi.setSize(df.getSize());
+        fi.setExt(df.getExt());
+
+        String fullPath = df.getParentPath().endsWith("/")
+                ? df.getParentPath() + df.getName()
+                : df.getParentPath() + "/" + df.getName();
+        fi.setPath(fullPath);
+
+        if (!df.getIsDir() && (isImageFile(df.getName()) || isVideoFile(df.getName()))) {
+            fi.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(fullPath));
         }
 
-        String fileName = item.getName();
-
-        if (isImageFile(fileName) || isVideoFile(fileName)) {
-            item.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(item.getPath()));
-        }
+        return fi;
     }
 
     /**

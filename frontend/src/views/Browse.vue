@@ -23,26 +23,38 @@
       </template>
     </div>
 
+    <!-- 搜索栏 -->
+    <div class="search-bar" v-if="files.length > 0">
+      <van-search
+        v-model="searchText"
+        placeholder="搜索当前目录"
+        shape="round"
+        background="transparent"
+        :clearable="true"
+      />
+    </div>
+
     <!-- 文件列表 - 网格模式 -->
-    <van-list
-      v-if="viewMode === 'grid'"
-      v-model:loading="loadingMore"
-      :finished="!hasMore"
-      finished-text="没有更多了"
-      @load="loadMore"
-      :immediate-check="false"
-      offset="100"
-    >
+    <div v-if="viewMode === 'grid'" class="grid-container">
       <div class="grid-layout">
         <div
-          v-for="item in files"
+          v-for="item in displayFiles"
           :key="item.name"
           class="folder-card"
+          :data-dir-path="item.isDir ? item.path : undefined"
           @click="handleClick(item)"
         >
           <div class="file-icon">
+            <img
+              v-if="item.isDir && (dirThumbnails[item.path] || item.url)"
+              :src="dirThumbnails[item.path] || item.url"
+              :alt="item.name"
+              class="file-thumbnail dir-preview"
+              loading="lazy"
+              @error="e => e.target.style.display = 'none'"
+            />
             <van-icon
-              v-if="item.isDir"
+              v-else-if="item.isDir"
               name="folder-o"
               size="48"
               color="#1989fa"
@@ -68,12 +80,16 @@
           </div>
         </div>
       </div>
-    </van-list>
+      <div ref="sentinelRef" class="load-sentinel">
+        <van-loading v-if="loadingMore" type="spinner" size="24" />
+        <span v-else-if="!hasMore && displayFiles.length > 0" class="no-more-text">没有更多了</span>
+      </div>
+    </div>
 
     <!-- 瀑布流模式 -->
     <div v-else class="waterfall">
       <div
-        v-for="(item, index) in imageFiles"
+        v-for="(item, index) in displayImageFiles"
         :key="item.name"
         class="waterfall-item"
         @click="openViewer(index)"
@@ -83,9 +99,9 @@
     </div>
 
     <!-- 空状态 -->
-    <div v-if="!loading && files.length === 0" class="empty-state">
+    <div v-if="!loading && displayFiles.length === 0" class="empty-state">
       <van-icon name="folder-o" size="64" color="#dcdee0" />
-      <p>此目录为空</p>
+      <p>{{ searchText ? '没有匹配的文件' : '此目录为空' }}</p>
     </div>
 
     <!-- 加载状态 -->
@@ -94,14 +110,19 @@
     </div>
 
     <!-- 浮动返回按钮 -->
-    <div v-if="viewMode === 'waterfall'" class="fab" @click="viewMode = 'grid'">
+    <div v-if="viewMode === 'waterfall'" class="fab fab-grid" @click="viewMode = 'grid'">
       <van-icon name="apps-o" size="24" />
     </div>
+    <transition name="fab-fade">
+      <div v-if="showBackButton" class="fab fab-back" @click="goBack">
+        <van-icon name="arrow-left" size="20" />
+      </div>
+    </transition>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 
@@ -109,7 +130,8 @@ const router = useRouter()
 const route = useRoute()
 
 const engineId = computed(() => Number(route.params.engineId))
-const rootPath = ref(route.query.path || '/')
+const storageKey = computed(() => `xbrowse_root_${engineId.value}`)
+const rootPath = ref(sessionStorage.getItem(storageKey.value) || route.query.path || '/')
 const currentPath = ref(route.query.path || '/')
 
 const files = ref([])
@@ -119,10 +141,48 @@ const viewMode = ref('grid')
 const page = ref(1)
 const perPage = ref(20)
 const hasMore = ref(true)
+const dirThumbnails = ref({})
+const pendingDirFetch = ref(false)
+const searchText = ref('')
+const searchResults = ref([])
+const searching = ref(false)
+const sentinelRef = ref(null)
+const showBackButton = ref(false)
+let searchTimer = null
+let dirObserver = null
+let dirObserverTimer = null
+let scrollObserver = null
+const scrollPositions = new Map()
+const scrollStorageKey = computed(() => `xbrowse_scroll_${engineId.value}`)
+
+function saveScrollPositions() {
+  const obj = {}
+  scrollPositions.forEach((v, k) => { obj[k] = v })
+  sessionStorage.setItem(scrollStorageKey.value, JSON.stringify(obj))
+}
+
+function loadScrollPositions() {
+  try {
+    const raw = sessionStorage.getItem(scrollStorageKey.value)
+    if (raw) {
+      const obj = JSON.parse(raw)
+      Object.entries(obj).forEach(([k, v]) => scrollPositions.set(k, v))
+    }
+  } catch {}
+}
 
 const currentDirName = computed(() => {
   const parts = currentPath.value.split('/').filter(Boolean)
   return parts[parts.length - 1] || '根目录'
+})
+
+const displayFiles = computed(() => {
+  if (!searchText.value) return files.value
+  return searchResults.value
+})
+
+const displayImageFiles = computed(() => {
+  return displayFiles.value.filter((f) => !f.isDir && isImage(f.ext))
 })
 
 const breadcrumbs = computed(() => {
@@ -153,13 +213,16 @@ async function loadFiles() {
     if (res.code === 200) {
       files.value = res.data
       hasMore.value = res.data.length >= perPage.value
+      dirThumbnails.value = {}
       preloadPageImages()
       preloadNextPage()
+      observeDirCards()
     }
   } catch (error) {
     console.error('加载文件列表失败:', error)
   } finally {
     loading.value = false
+    nextTick(() => setupSentinelObserver())
   }
 }
 
@@ -179,19 +242,28 @@ async function loadMore() {
     if (res.code === 200) {
       files.value = [...files.value, ...res.data]
       hasMore.value = res.data.length >= perPage.value
+      observeDirCards()
     }
   } catch (error) {
     console.error('加载更多失败:', error)
   } finally {
     loadingMore.value = false
+    nextTick(() => setupSentinelObserver())
   }
 }
 
 function handleClick(item) {
   if (item.isDir) {
+    const pos = { y: window.scrollY, page: page.value }
+    scrollPositions.set(currentPath.value, pos)
+    saveScrollPositions()
     currentPath.value = item.path
+    showBackButton.value = true
+    searchText.value = ''
+    searchResults.value = []
     router.push({ query: { path: item.path } })
     loadFiles()
+    window.scrollTo(0, 0)
   } else if (isImage(item.ext)) {
     const index = imageFiles.value.findIndex((f) => f.name === item.name)
     openViewer(index >= 0 ? index : 0)
@@ -213,7 +285,12 @@ function openViewer(index) {
 }
 
 function goBack() {
+  searchText.value = ''
+  searchResults.value = []
   if (currentPath.value === rootPath.value) {
+    showBackButton.value = false
+    sessionStorage.removeItem(storageKey.value)
+    sessionStorage.removeItem(scrollStorageKey.value)
     router.push('/')
   } else {
     const rootParts = rootPath.value.split('/').filter(Boolean)
@@ -226,14 +303,62 @@ function goBack() {
       currentPath.value = rootPath.value
     }
     router.replace({ query: { path: currentPath.value } })
-    loadFiles()
+
+    const cached = scrollPositions.get(currentPath.value)
+    const restoreY = cached ? cached.y : 0
+    const restorePage = cached ? cached.page : 1
+
+    page.value = restorePage
+    hasMore.value = true
+    loading.value = true
+    api.get('/api/files/list', {
+      params: { engineId: engineId.value, path: currentPath.value, page: restorePage, perPage: perPage.value }
+    }).then(res => {
+      if (res.code === 200) {
+        files.value = res.data
+        hasMore.value = res.data.length >= perPage.value
+        loading.value = false
+        nextTick(() => {
+          window.scrollTo(0, restoreY)
+          setupSentinelObserver()
+          observeDirCards()
+        })
+      }
+    }).catch(() => { loading.value = false })
   }
 }
 
 function navigateTo(path) {
   currentPath.value = path
+  showBackButton.value = false
+  searchText.value = ''
+  searchResults.value = []
   router.replace({ query: { path } })
-  loadFiles()
+
+  const cached = scrollPositions.get(path)
+  const restoreY = cached ? cached.y : 0
+  const restorePage = cached ? cached.page : 1
+
+  page.value = restorePage
+  hasMore.value = true
+  loading.value = true
+  api.get('/api/files/list', {
+    params: { engineId: engineId.value, path, page: restorePage, perPage: perPage.value }
+  }).then(res => {
+    if (res.code === 200) {
+      files.value = res.data
+      hasMore.value = res.data.length >= perPage.value
+      loading.value = false
+      dirThumbnails.value = {}
+      preloadPageImages()
+      preloadNextPage()
+      observeDirCards()
+      nextTick(() => {
+        window.scrollTo(0, restoreY)
+        setupSentinelObserver()
+      })
+    }
+  }).catch(() => { loading.value = false })
 }
 
 function refresh() {
@@ -418,24 +543,123 @@ function startCacheTimer() {
   }, 60 * 1000)
 }
 
+async function fetchDirThumbnails(dirPaths) {
+  if (!dirPaths || dirPaths.length === 0) return
+  const toFetch = dirPaths.filter(p => !(p in dirThumbnails.value))
+  if (toFetch.length === 0) return
+  pendingDirFetch.value = true
+  try {
+    const parts = [`engineId=${engineId.value}`]
+    toFetch.forEach(p => parts.push(`paths=${encodeURIComponent(p)}`))
+    const res = await api.get(`/api/files/dir-thumbnail?${parts.join('&')}`)
+    if (res.code === 200) {
+      const merged = { ...dirThumbnails.value }
+      for (const [path, url] of Object.entries(res.data)) {
+        if (url) merged[path] = url
+      }
+      dirThumbnails.value = merged
+    }
+  } catch (e) {
+    console.error('加载目录预览图失败:', e)
+  } finally {
+    pendingDirFetch.value = false
+  }
+}
+
+function setupDirObserver() {
+  if (dirObserver) dirObserver.disconnect()
+  dirObserver = new IntersectionObserver((entries) => {
+    const paths = []
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        const path = entry.target.dataset.dirPath
+        if (path && !(path in dirThumbnails.value)) {
+          paths.push(path)
+        }
+      }
+    }
+    if (paths.length > 0) {
+      fetchDirThumbnails(paths)
+    }
+  }, { rootMargin: '200px' })
+
+  nextTick(() => {
+    document.querySelectorAll('[data-dir-path]').forEach(el => {
+      dirObserver.observe(el)
+    })
+  })
+}
+
+function observeDirCards() {
+  if (dirObserverTimer) clearTimeout(dirObserverTimer)
+  dirObserverTimer = setTimeout(() => setupDirObserver(), 100)
+}
+
+function setupSentinelObserver() {
+  if (scrollObserver) scrollObserver.disconnect()
+  if (!sentinelRef.value) return
+  scrollObserver = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && hasMore.value && !loadingMore.value && !searchText.value) {
+      loadMore()
+    }
+  }, { rootMargin: '200px' })
+  scrollObserver.observe(sentinelRef.value)
+}
+
+watch(searchText, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  if (!val) {
+    searchResults.value = []
+    observeDirCards()
+    return
+  }
+  searchTimer = setTimeout(() => doSearch(val), 300)
+})
+
+async function doSearch(keyword) {
+  if (!keyword) return
+  searching.value = true
+  try {
+    const res = await api.get('/api/files/search', {
+      params: { engineId: engineId.value, keyword, parentPath: currentPath.value }
+    })
+    if (res.code === 200) {
+      searchResults.value = res.data
+    }
+  } catch (e) {
+    console.error('搜索失败:', e)
+  } finally {
+    searching.value = false
+  }
+}
+
 watch(
   () => route.query.path,
   (newPath) => {
     if (newPath && newPath !== currentPath.value) {
       clearImageCache()
       currentPath.value = newPath
+      showBackButton.value = false
       loadFiles()
     }
   }
 )
 
 onMounted(() => {
+  loadScrollPositions()
+  sessionStorage.setItem(storageKey.value, rootPath.value)
+  if (currentPath.value !== rootPath.value) {
+    showBackButton.value = true
+  }
   loadFiles()
   startCacheTimer()
 })
 
 onUnmounted(() => {
   clearImageCache()
+  if (dirObserver) dirObserver.disconnect()
+  if (scrollObserver) scrollObserver.disconnect()
+  if (dirObserverTimer) clearTimeout(dirObserverTimer)
 })
 </script>
 
@@ -465,6 +689,27 @@ onUnmounted(() => {
 .breadcrumb-separator {
   margin: 0 4px;
   color: #dcdee0;
+}
+
+.search-bar {
+  padding: 0 8px;
+  background: #f7f8fa;
+}
+
+.search-bar :deep(.van-search) {
+  padding: 8px 0;
+}
+
+.load-sentinel {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+}
+
+.no-more-text {
+  color: #969799;
+  font-size: 13px;
 }
 
 .grid-layout {
@@ -504,6 +749,14 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.dir-preview {
+  position: relative;
+}
+
+.dir-preview + .van-icon {
+  display: none;
 }
 
 .file-info {
@@ -559,10 +812,8 @@ onUnmounted(() => {
 .fab {
   position: fixed;
   bottom: 24px;
-  right: 24px;
-  width: 48px;
   height: 48px;
-  border-radius: 50%;
+  border-radius: 24px;
   background: #1989fa;
   color: #fff;
   display: flex;
@@ -571,5 +822,29 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   cursor: pointer;
   z-index: 100;
+  gap: 4px;
+}
+
+.fab-grid {
+  right: 24px;
+  width: 48px;
+}
+
+.fab-back {
+  left: 50%;
+  transform: translateX(-50%);
+  width: 48px;
+  padding: 0;
+}
+
+.fab-fade-enter-active,
+.fab-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.fab-fade-enter-from,
+.fab-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(12px);
 }
 </style>
