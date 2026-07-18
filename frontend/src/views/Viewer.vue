@@ -20,6 +20,7 @@
         :ref="el => { if (index === currentIndex) currentImageRef = el }"
         class="image-item"
       >
+        <span class="image-label">{{ file.name.replace(/\.[^.]+$/, '') }}</span>
         <img
           :src="file.url"
           :alt="file.name"
@@ -300,6 +301,24 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+}
+
+.image-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  color: #fff;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 2px 8px;
+  border-radius: 4px;
+  z-index: 1;
+  pointer-events: none;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scroll-image {
