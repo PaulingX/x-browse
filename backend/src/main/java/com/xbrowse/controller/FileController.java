@@ -162,9 +162,10 @@ public class FileController {
             @RequestParam(defaultValue = "/") String path,
             @RequestParam(defaultValue = "false") boolean refresh,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int perPage) {
-        log.debug("浏览目录: engineId={}, path={}, page={}, perPage={}", engineId, path, page, perPage);
-        return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh, page, perPage));
+            @RequestParam(defaultValue = "20") int perPage,
+            @RequestParam(defaultValue = "name_asc") String sort) {
+        log.debug("浏览目录: engineId={}, path={}, page={}, perPage={}, sort={}", engineId, path, page, perPage, sort);
+        return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh, page, perPage, sort));
     }
 
     /**

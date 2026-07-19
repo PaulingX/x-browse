@@ -15,6 +15,8 @@ public interface DirFileRepository extends JpaRepository<DirFile, Long> {
 
     List<DirFile> findByEngineIdAndParentPathOrderByIsDirDescNameAsc(Long engineId, String parentPath);
 
+    Page<DirFile> findByEngineIdAndParentPath(Long engineId, String parentPath, Pageable pageable);
+
     Page<DirFile> findByEngineIdAndParentPathOrderByIsDirDescNameAsc(Long engineId, String parentPath, Pageable pageable);
 
     @Query("SELECT d FROM DirFile d WHERE d.engineId = :engineId AND d.parentPath = :parentPath AND LOWER(d.name) LIKE LOWER(CONCAT('%', :keyword, '%')) ORDER BY d.isDir DESC, d.name ASC")

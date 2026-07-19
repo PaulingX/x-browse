@@ -159,6 +159,7 @@ let searchTimer = null
 let dirObserver = null
 let dirObserverTimer = null
 let scrollObserver = null
+let canLoadMoreOnIntersect = true
 const scrollPositions = new Map()
 const scrollStorageKey = computed(() => `xbrowse_scroll_${engineId.value}`)
 
@@ -184,17 +185,7 @@ const currentDirName = computed(() => {
 })
 
 const displayFiles = computed(() => {
-  let list = searchText.value ? searchResults.value : files.value
-  if (!isRoot.value) return list
-  const [field, dir] = sortMode.value.split('_')
-  const mul = dir === 'asc' ? 1 : -1
-  return [...list].sort((a, b) => {
-    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
-    if (field === 'time') {
-      return ((a.modified || 0) - (b.modified || 0)) * mul
-    }
-    return a.name.localeCompare(b.name, 'zh') * mul
-  })
+  return searchText.value ? searchResults.value : files.value
 })
 
 const displayImageFiles = computed(() => {
@@ -217,14 +208,10 @@ async function loadFiles() {
   loading.value = true
   page.value = 1
   hasMore.value = true
+  canLoadMoreOnIntersect = true
   try {
     const res = await api.get('/api/files/list', {
-      params: {
-        engineId: engineId.value,
-        path: currentPath.value,
-        page: page.value,
-        perPage: perPage.value
-      }
+      params: buildListParams(currentPath.value, page.value)
     })
     if (res.code === 200) {
       files.value = res.data
@@ -243,17 +230,12 @@ async function loadFiles() {
 }
 
 async function loadMore() {
-  if (loadingMore.value || !hasMore.value) return
+  if (loadingMore.value || !hasMore.value || searchText.value) return
   loadingMore.value = true
   page.value++
   try {
     const res = await api.get('/api/files/list', {
-      params: {
-        engineId: engineId.value,
-        path: currentPath.value,
-        page: page.value,
-        perPage: perPage.value
-      }
+      params: buildListParams(currentPath.value, page.value)
     })
     if (res.code === 200) {
       files.value = [...files.value, ...res.data]
@@ -264,7 +246,6 @@ async function loadMore() {
     console.error('加载更多失败:', error)
   } finally {
     loadingMore.value = false
-    nextTick(() => setupSentinelObserver())
   }
 }
 
@@ -300,6 +281,23 @@ function openViewer(index) {
   })
 }
 
+function buildListParams(path, targetPage) {
+  return {
+    engineId: engineId.value,
+    path,
+    page: targetPage,
+    perPage: perPage.value,
+    sort: path === rootPath.value ? sortMode.value : 'name_asc'
+  }
+}
+
+function resetListState() {
+  files.value = []
+  dirThumbnails.value = {}
+  window.scrollTo(0, 0)
+  loadFiles()
+}
+
 function goBack() {
   searchText.value = ''
   searchResults.value = []
@@ -328,7 +326,7 @@ function goBack() {
     hasMore.value = true
     loading.value = true
     api.get('/api/files/list', {
-      params: { engineId: engineId.value, path: currentPath.value, page: restorePage, perPage: perPage.value }
+      params: buildListParams(currentPath.value, restorePage)
     }).then(res => {
       if (res.code === 200) {
         files.value = res.data
@@ -359,7 +357,7 @@ function navigateTo(path) {
   hasMore.value = true
   loading.value = true
   api.get('/api/files/list', {
-    params: { engineId: engineId.value, path, page: restorePage, perPage: perPage.value }
+    params: buildListParams(path, restorePage)
   }).then(res => {
     if (res.code === 200) {
       files.value = res.data
@@ -390,6 +388,11 @@ function cycleSortMode() {
   const idx = SORT_MODES.indexOf(sortMode.value)
   sortMode.value = SORT_MODES[(idx + 1) % SORT_MODES.length]
   localStorage.setItem('xbrowse_sort', sortMode.value)
+  if (isRoot.value) {
+    scrollPositions.delete(currentPath.value)
+    saveScrollPositions()
+    resetListState()
+  }
 }
 
 const sortLabel = computed(() => {
@@ -547,12 +550,7 @@ function preloadNextPage() {
   if (!hasMore.value) return
   const nextPage = page.value + 1
   api.get('/api/files/list', {
-    params: {
-      engineId: engineId.value,
-      path: currentPath.value,
-      page: nextPage,
-      perPage: perPage.value
-    }
+    params: buildListParams(currentPath.value, nextPage)
   }).then(res => {
     if (res.code === 200) {
       const urls = res.data
@@ -627,7 +625,13 @@ function setupSentinelObserver() {
   if (scrollObserver) scrollObserver.disconnect()
   if (!sentinelRef.value) return
   scrollObserver = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting && hasMore.value && !loadingMore.value && !searchText.value) {
+    const entry = entries[0]
+    if (!entry.isIntersecting) {
+      canLoadMoreOnIntersect = true
+      return
+    }
+    if (canLoadMoreOnIntersect && hasMore.value && !loadingMore.value && !searchText.value) {
+      canLoadMoreOnIntersect = false
       loadMore()
     }
   }, { rootMargin: '200px' })

@@ -6,6 +6,7 @@ import com.xbrowse.repository.DirFileRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import java.net.URLEncoder;
@@ -43,15 +44,24 @@ public class FileBrowseService {
     /**
      * 浏览目录（从数据库读取）
      */
-    public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage) {
+    public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage, String sortMode) {
         path = normalizePath(path);
-        log.debug("查询目录: engineId={}, path={}, page={}, perPage={}", engineId, path, page, perPage);
+        log.debug("查询目录: engineId={}, path={}, page={}, perPage={}, sort={}", engineId, path, page, perPage, sortMode);
         Page<DirFile> pageData = dirFileRepository
-                .findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, path, PageRequest.of(page - 1, perPage));
+                .findByEngineIdAndParentPath(engineId, path, PageRequest.of(page - 1, perPage, buildSort(sortMode)));
         log.debug("查询结果: engineId={}, path={}, total={}", engineId, path, pageData.getTotalElements());
         return pageData.getContent().stream()
                 .map(df -> toFileItem(df, engineId))
                 .collect(Collectors.toList());
+    }
+
+    private Sort buildSort(String sortMode) {
+        String mode = sortMode == null ? "name_asc" : sortMode;
+        Sort.Direction direction = mode.endsWith("_desc") ? Sort.Direction.DESC : Sort.Direction.ASC;
+        Sort.Order primary = mode.startsWith("time_")
+                ? new Sort.Order(direction, "modifiedTime")
+                : new Sort.Order(direction, "name").ignoreCase();
+        return Sort.by(Sort.Order.desc("isDir"), primary, Sort.Order.asc("name").ignoreCase());
     }
 
     /**
