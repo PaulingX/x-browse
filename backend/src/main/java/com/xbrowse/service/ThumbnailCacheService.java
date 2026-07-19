@@ -1,20 +1,20 @@
 package com.xbrowse.service;
 
-import com.xbrowse.entity.AlistEngine;
-import com.xbrowse.repository.AlistEngineRepository;
 import com.xbrowse.util.AlistClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
+import javax.imageio.ImageIO;
+import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
-import java.util.Optional;
 
 /**
  * 目录预览图本地缓存服务
@@ -59,16 +59,10 @@ public class ThumbnailCacheService {
     public String cacheThumbnail(Long engineId, String imagePath, AlistClient client) {
         log.info("缓存目录预览图: engineId={}, imagePath={}", engineId, imagePath);
 
-        // 获取文件扩展名
-        String ext = getExtension(imagePath);
-        if (ext.isEmpty()) {
-            log.warn("预览图文件无扩展名，跳过缓存: engineId={}, imagePath={}", engineId, imagePath);
-            return null;
-        }
-
         // 生成缓存文件路径（使用路径哈希避免文件名冲突和路径过长问题）
+        // 统一存储为 jpg 格式（压缩时会转换格式）
         String pathHash = md5(imagePath);
-        String cacheFileName = pathHash + "." + ext;
+        String cacheFileName = pathHash + ".jpg";
         Path cachePath = Paths.get(cacheDir, THUMBNAILS_DIR, String.valueOf(engineId), cacheFileName);
 
         // 如果已缓存，直接返回 URL
@@ -122,10 +116,8 @@ public class ThumbnailCacheService {
      * @return 是否已缓存
      */
     public boolean isCached(Long engineId, String imagePath) {
-        String ext = getExtension(imagePath);
-        if (ext.isEmpty()) return false;
         String pathHash = md5(imagePath);
-        Path cachePath = Paths.get(cacheDir, THUMBNAILS_DIR, String.valueOf(engineId), pathHash + "." + ext);
+        Path cachePath = Paths.get(cacheDir, THUMBNAILS_DIR, String.valueOf(engineId), pathHash + ".jpg");
         return Files.exists(cachePath);
     }
 
@@ -137,7 +129,16 @@ public class ThumbnailCacheService {
     }
 
     /**
-     * 从 HTTP URL 下载文件到本地路径
+     * 从 HTTP URL 下载图片并压缩为缩略图保存到本地
+     * <p>
+     * 处理逻辑：
+     * 1. 从 Alist 下载原始图片
+     * 2. 等比缩放，最大宽度 200px
+     * 3. 输出为 JPEG 格式，质量 0.7
+     *
+     * @param fileUrl    图片下载地址
+     * @param targetPath 保存路径
+     * @throws IOException 下载或处理失败时抛出
      */
     private void downloadToFile(String fileUrl, Path targetPath) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
@@ -145,21 +146,58 @@ public class ThumbnailCacheService {
         connection.setConnectTimeout(30000);
         connection.setReadTimeout(60000);
 
-        try (InputStream in = connection.getInputStream()) {
-            Files.copy(in, targetPath, StandardCopyOption.REPLACE_EXISTING);
+        try (InputStream rawIn = connection.getInputStream()) {
+            // 先缓冲到内存，支持多次读取
+            byte[] data = rawIn.readAllBytes();
+
+            // 尝试解码为图片
+            BufferedImage originalImage = ImageIO.read(new ByteArrayInputStream(data));
+            if (originalImage == null) {
+                log.warn("无法解码图片，按原文件保存: {}", fileUrl);
+                Files.write(targetPath, data);
+                return;
+            }
+
+            int origWidth = originalImage.getWidth();
+            int origHeight = originalImage.getHeight();
+
+            // 计算缩放尺寸（最大宽度 200px，等比缩放）
+            int maxWidth = 200;
+            int targetWidth = origWidth;
+            int targetHeight = origHeight;
+            if (origWidth > maxWidth) {
+                targetWidth = maxWidth;
+                targetHeight = (int) ((double) origHeight / origWidth * maxWidth);
+            }
+
+            // 缩放图片
+            Image scaledImage = originalImage.getScaledInstance(targetWidth, targetHeight, Image.SCALE_SMOOTH);
+            BufferedImage thumbnail = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g2d = thumbnail.createGraphics();
+            g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g2d.drawImage(scaledImage, 0, 0, null);
+            g2d.dispose();
+
+            // 输出为 JPEG 格式
+            try (OutputStream out = Files.newOutputStream(targetPath)) {
+                ImageIO.write(thumbnail, "jpg", out);
+            }
+
+            log.info("预览图压缩完成: {}x{} -> {}x{}, 缓存大小: {}, 路径: {}",
+                    origWidth, origHeight, targetWidth, targetHeight,
+                    getFileSizeDesc(Files.size(targetPath)), targetPath);
         } finally {
             connection.disconnect();
         }
     }
 
     /**
-     * 从文件路径提取扩展名（小写）
+     * 格式化文件大小为可读字符串
      */
-    private String getExtension(String path) {
-        if (path == null) return "";
-        int dot = path.lastIndexOf('.');
-        if (dot < 0 || dot == path.length() - 1) return "";
-        return path.substring(dot + 1).toLowerCase();
+    private String getFileSizeDesc(long bytes) {
+        if (bytes < 1024) return bytes + "B";
+        if (bytes < 1024 * 1024) return String.format("%.1fKB", bytes / 1024.0);
+        return String.format("%.1fMB", bytes / (1024.0 * 1024));
     }
 
     /**

@@ -185,6 +185,7 @@ const currentDirName = computed(() => {
 
 const displayFiles = computed(() => {
   let list = searchText.value ? searchResults.value : files.value
+  if (!isRoot.value) return list
   const [field, dir] = sortMode.value.split('_')
   const mul = dir === 'asc' ? 1 : -1
   return [...list].sort((a, b) => {
