@@ -20,15 +20,18 @@ public class DirFileSyncService {
     private final DirFileRepository dirFileRepository;
     private final AlistEngineService engineService;
     private final TransactionTemplate txTemplate;
+    private final ThumbnailCacheService thumbnailCacheService;
 
     private static final Set<String> IMAGE_EXTS = Set.of(
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico"
     );
 
-    public DirFileSyncService(DirFileRepository dirFileRepository, AlistEngineService engineService, TransactionTemplate txTemplate) {
+    public DirFileSyncService(DirFileRepository dirFileRepository, AlistEngineService engineService,
+                              TransactionTemplate txTemplate, ThumbnailCacheService thumbnailCacheService) {
         this.dirFileRepository = dirFileRepository;
         this.engineService = engineService;
         this.txTemplate = txTemplate;
+        this.thumbnailCacheService = thumbnailCacheService;
     }
 
     @Scheduled(fixedDelay = 300000, initialDelay = 30000)
@@ -77,10 +80,14 @@ public class DirFileSyncService {
         }
         log.info("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
 
-        String dirThumbnail = txTemplate.execute(status -> {
+        // 用于保存数据库的缩略图 URL（可能是代理 URL 或缓存 URL）
+        String dirThumbnail = null;
+        // 第一个图片文件的路径（用于下载缓存）
+        String firstImagePath = null;
+
+        txTemplate.executeWithoutResult(status -> {
             dirFileRepository.deleteByEngineIdAndParentPath(engineId, path);
 
-            String thumb = null;
             List<DirFile> toSave = new ArrayList<>();
             for (FileItem item : items) {
                 DirFile df = new DirFile();
@@ -92,15 +99,34 @@ public class DirFileSyncService {
                 df.setExt(item.getExt());
                 df.setModifiedTime(item.getModified());
                 toSave.add(df);
-
-                if (!item.getIsDir() && thumb == null && isImageFile(item.getName())) {
-                    thumb = "/api/files/proxy/" + engineId + "/" + encodePath(item.getPath());
-                }
             }
             dirFileRepository.saveAll(toSave);
-            return thumb;
+            log.info("目录数据已保存: engineId={}, path={}, count={}", engineId, path, toSave.size());
         });
 
+        // 在事务外寻找第一个图片文件作为目录缩略图
+        for (FileItem item : items) {
+            if (!item.getIsDir() && isImageFile(item.getName())) {
+                firstImagePath = item.getPath();
+                break;
+            }
+        }
+
+        // 尝试缓存预览图到本地磁盘
+        if (firstImagePath != null) {
+            String cachedUrl = thumbnailCacheService.cacheThumbnail(engineId, firstImagePath, client);
+            if (cachedUrl != null) {
+                // 缓存成功，使用本地缓存 URL
+                dirThumbnail = cachedUrl;
+                log.info("目录预览图已缓存: engineId={}, path={}, cacheUrl={}", engineId, path, cachedUrl);
+            } else {
+                // 缓存失败，回退到代理 URL
+                dirThumbnail = "/api/files/proxy/" + engineId + "/" + encodePath(firstImagePath);
+                log.warn("目录预览图缓存失败，回退到代理URL: engineId={}, path={}", engineId, path);
+            }
+        }
+
+        // 递归同步子目录，获取子目录的缩略图
         for (FileItem item : items) {
             if (item.getIsDir()) {
                 try {
@@ -114,6 +140,7 @@ public class DirFileSyncService {
             }
         }
 
+        // 如果当前目录没有图片，尝试使用子目录的缩略图
         if (dirThumbnail == null) {
             dirThumbnail = txTemplate.execute(status -> {
                 String parentPath = parentOf(path);

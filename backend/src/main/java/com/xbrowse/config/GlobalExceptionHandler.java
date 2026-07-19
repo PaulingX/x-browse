@@ -21,7 +21,7 @@ public class GlobalExceptionHandler {
 
     private boolean isBinaryRequest(HttpServletRequest request) {
         String uri = request.getRequestURI();
-        return uri.startsWith("/api/files/proxy/") || uri.startsWith("/api/files/stream/");
+        return uri.startsWith("/api/files/proxy/") || uri.startsWith("/api/files/stream/") || uri.startsWith("/api/files/thumbnail/");
     }
 
     @ExceptionHandler(RuntimeException.class)

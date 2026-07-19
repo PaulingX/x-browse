@@ -55,11 +55,21 @@ public class FileBrowseService {
     }
 
     /**
-     * 获取目录预览图（第一个图片文件的代理 URL）
+     * 获取目录预览图（优先使用数据库中缓存的预览图 URL）
      */
     public String getDirThumbnail(Long engineId, String dirPath) {
         dirPath = normalizePath(dirPath);
         log.debug("获取目录预览图: engineId={}, dirPath={}", engineId, dirPath);
+
+        // 直接从数据库读取该目录的 thumbnailUrl（同步时已缓存）
+        DirFile dirFile = dirFileRepository.findByEngineIdAndParentPathAndName(engineId, parentOf(dirPath), nameOf(dirPath));
+        if (dirFile != null && dirFile.getThumbnailUrl() != null) {
+            log.debug("使用缓存的预览图URL: engineId={}, dirPath={}, url={}", engineId, dirPath, dirFile.getThumbnailUrl());
+            return dirFile.getThumbnailUrl();
+        }
+
+        // 数据库中没有预览图，回退到扫描子项
+        log.debug("数据库中无预览图，扫描子项: engineId={}, dirPath={}", engineId, dirPath);
         List<DirFile> items = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, dirPath);
 
         String firstSubDir = null;
@@ -134,7 +144,10 @@ public class FileBrowseService {
             fi.setModified(df.getModifiedTime());
         }
 
-        if (!df.getIsDir()) {
+        if (df.getIsDir()) {
+            // 目录项：使用数据库中存储的预览图 URL（可能是本地缓存 URL 或代理 URL）
+            fi.setUrl(df.getThumbnailUrl());
+        } else {
             if (isVideoFile(df.getName())) {
                 fi.setUrl("/api/files/stream/" + engineId + "/" + encodePath(fullPath));
             } else if (isImageFile(df.getName())) {
@@ -159,6 +172,23 @@ public class FileBrowseService {
             path = path.substring(0, path.length() - 1);
         }
         return path;
+    }
+
+    /**
+     * 获取父目录路径
+     */
+    private String parentOf(String path) {
+        if (path.equals("/")) return "/";
+        String p = path.substring(0, path.lastIndexOf('/'));
+        return p.isEmpty() ? "/" : p;
+    }
+
+    /**
+     * 获取路径最后一段名称
+     */
+    private String nameOf(String path) {
+        if (path.equals("/")) return "/";
+        return path.substring(path.lastIndexOf('/') + 1);
     }
 
     /**

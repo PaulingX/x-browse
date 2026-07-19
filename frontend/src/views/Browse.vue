@@ -4,7 +4,7 @@
     <van-nav-bar :title="currentDirName" left-arrow @click-left="goBack" fixed placeholder>
       <template #right>
         <van-icon name="replay" size="20" @click="refresh" />
-        <van-icon name="sort" size="20" style="margin-left: 12px" @click="cycleSortMode" />
+        <van-icon v-if="isRoot" name="sort" size="20" style="margin-left: 12px" @click="cycleSortMode" />
         <van-icon name="grid-o" size="20" style="margin-left: 12px" @click="toggleViewMode" />
       </template>
     </van-nav-bar>
@@ -33,7 +33,7 @@
         background="transparent"
         :clearable="true"
       />
-      <div class="sort-indicator" @click="cycleSortMode">
+      <div v-if="isRoot" class="sort-indicator" @click="cycleSortMode">
         <van-icon name="sort" size="14" />
         <span>{{ sortLabel }}</span>
       </div>
@@ -154,6 +154,7 @@ const searching = ref(false)
 const sentinelRef = ref(null)
 const showBackButton = ref(false)
 const sortMode = ref(localStorage.getItem('xbrowse_sort') || 'name_asc')
+const isRoot = computed(() => currentPath.value === rootPath.value)
 let searchTimer = null
 let dirObserver = null
 let dirObserverTimer = null

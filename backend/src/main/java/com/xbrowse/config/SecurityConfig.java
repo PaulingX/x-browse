@@ -45,6 +45,7 @@ public class SecurityConfig {
                 // 文件代理（<img> <video> 等标签无法携带 Authorization header）
                 .requestMatchers("/api/files/proxy/**").permitAll()
                 .requestMatchers("/api/files/stream/**").permitAll()
+                .requestMatchers("/api/files/thumbnail/**").permitAll()
                 // 静态资源和前端页面
                 .requestMatchers("/", "/assets/**", "/favicon.ico", "/*.html", "/*.js", "/*.css", "/*.ico", "/*.svg", "/*.png", "/*.jpg").permitAll()
                 // Actuator

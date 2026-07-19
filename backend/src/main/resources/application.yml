@@ -19,6 +19,7 @@ spring:
 # x-browse 配置
 xbrowse:
   data-dir: ${XBROWSE_DATA_DIR:./data}
+  cache-dir: ${XBROWSE_CACHE_DIR:./data/cache}
   log-dir: ${XBROWSE_LOG_DIR:./logs}
   thumbnail-enabled: ${XBROWSE_THUMBNAIL_ENABLED:true}
   jwt-secret: ${XBROWSE_JWT_SECRET:gbkqbkXWx1PuwHyB7QYkNZYEVR51zMLz}

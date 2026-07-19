@@ -7,10 +7,12 @@ import com.xbrowse.entity.DirFile;
 import com.xbrowse.repository.AlistEngineRepository;
 import com.xbrowse.service.DirFileSyncService;
 import com.xbrowse.service.FileBrowseService;
+import com.xbrowse.service.ThumbnailCacheService;
 import com.xbrowse.util.AlistClient;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -38,13 +40,16 @@ public class FileController {
     private final FileBrowseService fileBrowseService;
     private final DirFileSyncService dirFileSyncService;
     private final AlistEngineRepository engineRepository;
+    private final ThumbnailCacheService thumbnailCacheService;
 
     public FileController(FileBrowseService fileBrowseService,
                           DirFileSyncService dirFileSyncService,
-                          AlistEngineRepository engineRepository) {
+                          AlistEngineRepository engineRepository,
+                          ThumbnailCacheService thumbnailCacheService) {
         this.fileBrowseService = fileBrowseService;
         this.dirFileSyncService = dirFileSyncService;
         this.engineRepository = engineRepository;
+        this.thumbnailCacheService = thumbnailCacheService;
     }
 
     /**
@@ -61,6 +66,47 @@ public class FileController {
             result.put(dirPath, thumb);
         }
         return ApiResponse.success(result);
+    }
+
+    /**
+     * 提供本地缓存的目录预览图
+     * <p>
+     * 从本地缓存目录读取缩略图文件，避免每次都代理请求 Alist。
+     * 缓存文件由 DirFileSyncService 在同步时自动下载。
+     */
+    @GetMapping("/thumbnail/{engineId}/**")
+    public ResponseEntity<Resource> serveCachedThumbnail(
+            @PathVariable Long engineId,
+            HttpServletRequest request) {
+        // 从请求 URI 中提取缓存文件名
+        String prefix = "/api/files/thumbnail/" + engineId + "/";
+        String uri = request.getRequestURI();
+        String cacheFileName = uri.substring(uri.indexOf(prefix) + prefix.length());
+        log.debug("提供缓存预览图: engineId={}, cacheFileName={}", engineId, cacheFileName);
+
+        // 查找本地缓存文件
+        java.nio.file.Path cachePath = thumbnailCacheService.getCachedThumbnailPath(engineId, cacheFileName);
+        if (cachePath == null) {
+            log.warn("缓存预览图不存在: engineId={}, cacheFileName={}", engineId, cacheFileName);
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            Resource resource = new UrlResource(cachePath.toUri());
+            if (!resource.exists()) {
+                return ResponseEntity.notFound().build();
+            }
+
+            // 根据扩展名设置 Content-Type
+            String contentType = getContentType(cacheFileName);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .header(HttpHeaders.CACHE_CONTROL, "max-age=86400")
+                    .body(resource);
+        } catch (Exception e) {
+            log.error("读取缓存预览图失败: engineId={}, cacheFileName={}", engineId, cacheFileName, e);
+            return ResponseEntity.internalServerError().build();
+        }
     }
 
     /**
