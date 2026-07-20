@@ -48,6 +48,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/files/thumbnail/**").permitAll()
                 // 静态资源和前端页面
                 .requestMatchers("/", "/assets/**", "/favicon.ico", "/*.html", "/*.js", "/*.css", "/*.ico", "/*.svg", "/*.png", "/*.jpg").permitAll()
+                // SPA 前端路由，刷新页面时需要先返回 index.html，再由前端路由和 API 鉴权处理权限
+                .requestMatchers("/login", "/admin", "/admin/**", "/browse/**", "/viewer/**", "/settings").permitAll()
                 // Actuator
                 .requestMatchers("/actuator/**").permitAll()
                 // 其他所有请求需要认证

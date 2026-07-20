@@ -2,11 +2,10 @@ package com.xbrowse.service;
 
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.entity.DirFile;
+import com.xbrowse.entity.IndexedDirectory;
 import com.xbrowse.repository.DirFileRepository;
+import com.xbrowse.repository.IndexedDirectoryRepository;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import java.net.URLEncoder;
@@ -22,6 +21,7 @@ import java.util.stream.Collectors;
 public class FileBrowseService {
 
     private final DirFileRepository dirFileRepository;
+    private final IndexedDirectoryRepository indexedDirectoryRepository;
 
     /**
      * 图片扩展名
@@ -37,8 +37,10 @@ public class FileBrowseService {
             "mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"
     );
 
-    public FileBrowseService(DirFileRepository dirFileRepository) {
+    public FileBrowseService(DirFileRepository dirFileRepository,
+                             IndexedDirectoryRepository indexedDirectoryRepository) {
         this.dirFileRepository = dirFileRepository;
+        this.indexedDirectoryRepository = indexedDirectoryRepository;
     }
 
     /**
@@ -47,21 +49,91 @@ public class FileBrowseService {
     public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage, String sortMode) {
         path = normalizePath(path);
         log.debug("查询目录: engineId={}, path={}, page={}, perPage={}, sort={}", engineId, path, page, perPage, sortMode);
-        Page<DirFile> pageData = dirFileRepository
-                .findByEngineIdAndParentPath(engineId, path, PageRequest.of(page - 1, perPage, buildSort(sortMode)));
-        log.debug("查询结果: engineId={}, path={}, total={}", engineId, path, pageData.getTotalElements());
-        return pageData.getContent().stream()
+
+        Optional<IndexedDirectory> directoryOpt = indexedDirectoryRepository.findByEngineIdAndPath(engineId, path);
+        if (directoryOpt.isPresent()) {
+            IndexedDirectory directory = directoryOpt.get();
+            List<FileItem> items = new ArrayList<>();
+            indexedDirectoryRepository.findByEngineIdAndParentIdOrderByNameAsc(engineId, directory.getId()).stream()
+                    .map(this::toDirectoryItem)
+                    .forEach(items::add);
+            dirFileRepository.findByDirectoryIdOrderByNameAsc(directory.getId()).stream()
+                    .map(df -> toFileItem(df, engineId))
+                    .forEach(items::add);
+            items.sort(buildComparator(sortMode));
+            List<FileItem> pageItems = pageItems(items, page, perPage);
+            log.debug("查询结果: engineId={}, path={}, total={}", engineId, path, items.size());
+            return pageItems;
+        }
+
+        List<FileItem> fallbackItems = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, path)
+                .stream()
                 .map(df -> toFileItem(df, engineId))
+                .sorted(buildComparator(sortMode))
+                .collect(Collectors.toList());
+        log.debug("查询结果(兼容旧数据): engineId={}, path={}, total={}", engineId, path, fallbackItems.size());
+        return pageItems(fallbackItems, page, perPage);
+    }
+
+    public List<FileItem> searchFiles(Long engineId, String parentPath, String keyword) {
+        String path = normalizePath(parentPath);
+        String lowerKeyword = keyword == null ? "" : keyword.toLowerCase();
+        Optional<IndexedDirectory> directoryOpt = indexedDirectoryRepository.findByEngineIdAndPath(engineId, path);
+        if (directoryOpt.isPresent()) {
+            IndexedDirectory directory = directoryOpt.get();
+            List<FileItem> items = new ArrayList<>();
+            indexedDirectoryRepository.findByEngineIdAndParentIdOrderByNameAsc(engineId, directory.getId()).stream()
+                    .filter(dir -> dir.getName() != null && dir.getName().toLowerCase().contains(lowerKeyword))
+                    .map(this::toDirectoryItem)
+                    .forEach(items::add);
+            dirFileRepository.searchByNameAndDirectoryId(directory.getId(), keyword).stream()
+                    .map(df -> toFileItem(df, engineId))
+                    .forEach(items::add);
+            items.sort(buildComparator("name_asc"));
+            return items;
+        }
+
+        return dirFileRepository.searchByNameAndParentPath(engineId, path, keyword).stream()
+                .map(df -> toFileItem(df, engineId))
+                .sorted(buildComparator("name_asc"))
                 .collect(Collectors.toList());
     }
 
-    private Sort buildSort(String sortMode) {
+    private Comparator<FileItem> buildComparator(String sortMode) {
         String mode = sortMode == null ? "name_asc" : sortMode;
-        Sort.Direction direction = mode.endsWith("_desc") ? Sort.Direction.DESC : Sort.Direction.ASC;
-        Sort.Order primary = mode.startsWith("time_")
-                ? new Sort.Order(direction, "modifiedTime")
-                : new Sort.Order(direction, "name").ignoreCase();
-        return Sort.by(Sort.Order.desc("isDir"), primary, Sort.Order.asc("name").ignoreCase());
+        boolean desc = mode.endsWith("_desc");
+
+        Comparator<FileItem> dirFirst = Comparator.comparing(item -> !Boolean.TRUE.equals(item.getIsDir()));
+        Comparator<FileItem> primary;
+        if (mode.startsWith("time_")) {
+            primary = (left, right) -> compareNullableLong(left.getModified(), right.getModified(), desc);
+        } else {
+            primary = Comparator.comparing(item -> item.getName() == null ? "" : item.getName().toLowerCase());
+            if (desc) {
+                primary = primary.reversed();
+            }
+        }
+        Comparator<FileItem> nameAsc = Comparator.comparing(item -> item.getName() == null ? "" : item.getName().toLowerCase());
+        return dirFirst.thenComparing(primary).thenComparing(nameAsc);
+    }
+
+    private int compareNullableLong(Long left, Long right, boolean desc) {
+        if (left == null && right == null) return 0;
+        if (left == null) return 1;
+        if (right == null) return -1;
+        int compared = left.compareTo(right);
+        return desc ? -compared : compared;
+    }
+
+    private List<FileItem> pageItems(List<FileItem> items, int page, int perPage) {
+        int safePage = Math.max(page, 1);
+        int safePerPage = Math.max(perPage, 1);
+        int start = (safePage - 1) * safePerPage;
+        if (start >= items.size()) {
+            return List.of();
+        }
+        int end = Math.min(start + safePerPage, items.size());
+        return items.subList(start, end);
     }
 
     /**
@@ -71,15 +143,32 @@ public class FileBrowseService {
         dirPath = normalizePath(dirPath);
         log.debug("获取目录预览图: engineId={}, dirPath={}", engineId, dirPath);
 
-        // 直接从数据库读取该目录的 thumbnailUrl（同步时已缓存）
-        DirFile dirFile = dirFileRepository.findByEngineIdAndParentPathAndName(engineId, parentOf(dirPath), nameOf(dirPath));
-        if (dirFile != null && dirFile.getThumbnailUrl() != null) {
-            log.debug("使用缓存的预览图URL: engineId={}, dirPath={}, url={}", engineId, dirPath, dirFile.getThumbnailUrl());
-            return dirFile.getThumbnailUrl();
+        Optional<IndexedDirectory> directoryOpt = indexedDirectoryRepository.findByEngineIdAndPath(engineId, dirPath);
+        if (directoryOpt.isPresent()) {
+            IndexedDirectory directory = directoryOpt.get();
+            if (directory.getThumbnailUrl() != null) {
+                log.debug("使用缓存的预览图URL: engineId={}, dirPath={}, url={}", engineId, dirPath, directory.getThumbnailUrl());
+                return directory.getThumbnailUrl();
+            }
+
+            List<DirFile> files = dirFileRepository.findByDirectoryIdOrderByNameAsc(directory.getId());
+            for (DirFile df : files) {
+                if (isImageFile(df.getName())) {
+                    String fullPath = buildChildPath(df.getParentPath(), df.getName());
+                    return "/api/files/proxy/" + engineId + "/" + encodePath(fullPath);
+                }
+            }
+
+            List<IndexedDirectory> childDirectories = indexedDirectoryRepository.findByEngineIdAndParentIdOrderByNameAsc(engineId, directory.getId());
+            for (IndexedDirectory child : childDirectories) {
+                if (child.getThumbnailUrl() != null) {
+                    return child.getThumbnailUrl();
+                }
+            }
+            return null;
         }
 
-        // 数据库中没有预览图，回退到扫描子项
-        log.debug("数据库中无预览图，扫描子项: engineId={}, dirPath={}", engineId, dirPath);
+        // 兼容升级前仅有 parent_path 的旧数据
         List<DirFile> items = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, dirPath);
 
         String firstSubDir = null;
@@ -93,9 +182,7 @@ public class FileBrowseService {
                 continue;
             }
             if (isImageFile(df.getName())) {
-                String fullPath = df.getParentPath().endsWith("/")
-                        ? df.getParentPath() + df.getName()
-                        : df.getParentPath() + "/" + df.getName();
+                String fullPath = buildChildPath(df.getParentPath(), df.getName());
                 return "/api/files/proxy/" + engineId + "/" + encodePath(fullPath);
             }
         }
@@ -104,9 +191,7 @@ public class FileBrowseService {
             List<DirFile> subItems = dirFileRepository.findByEngineIdAndParentPathOrderByIsDirDescNameAsc(engineId, firstSubDir);
             for (DirFile df : subItems) {
                 if (!df.getIsDir() && isImageFile(df.getName())) {
-                    String fullPath = df.getParentPath().endsWith("/")
-                            ? df.getParentPath() + df.getName()
-                            : df.getParentPath() + "/" + df.getName();
+                    String fullPath = buildChildPath(df.getParentPath(), df.getName());
                     return "/api/files/proxy/" + engineId + "/" + encodePath(fullPath);
                 }
             }
@@ -146,9 +231,7 @@ public class FileBrowseService {
         fi.setSize(df.getSize());
         fi.setExt(df.getExt());
 
-        String fullPath = df.getParentPath().endsWith("/")
-                ? df.getParentPath() + df.getName()
-                : df.getParentPath() + "/" + df.getName();
+        String fullPath = buildChildPath(df.getParentPath(), df.getName());
         fi.setPath(fullPath);
         if (df.getModifiedTime() != null) {
             fi.setModified(df.getModifiedTime());
@@ -168,6 +251,20 @@ public class FileBrowseService {
         return fi;
     }
 
+    private FileItem toDirectoryItem(IndexedDirectory directory) {
+        FileItem fi = new FileItem();
+        fi.setName(directory.getName());
+        fi.setIsDir(true);
+        fi.setPath(directory.getPath());
+        fi.setUrl(directory.getThumbnailUrl());
+        fi.setModified(directory.getModifiedTime());
+        return fi;
+    }
+
+    private String buildChildPath(String parentPath, String name) {
+        return parentPath.endsWith("/") ? parentPath + name : parentPath + "/" + name;
+    }
+
     /**
      * 标准化路径
      */
@@ -182,23 +279,6 @@ public class FileBrowseService {
             path = path.substring(0, path.length() - 1);
         }
         return path;
-    }
-
-    /**
-     * 获取父目录路径
-     */
-    private String parentOf(String path) {
-        if (path.equals("/")) return "/";
-        String p = path.substring(0, path.lastIndexOf('/'));
-        return p.isEmpty() ? "/" : p;
-    }
-
-    /**
-     * 获取路径最后一段名称
-     */
-    private String nameOf(String path) {
-        if (path.equals("/")) return "/";
-        return path.substring(path.lastIndexOf('/') + 1);
     }
 
     /**

@@ -3,7 +3,6 @@ package com.xbrowse.controller;
 import com.xbrowse.dto.ApiResponse;
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.entity.AlistEngine;
-import com.xbrowse.entity.DirFile;
 import com.xbrowse.repository.AlistEngineRepository;
 import com.xbrowse.service.DirFileSyncService;
 import com.xbrowse.service.FileBrowseService;
@@ -22,9 +21,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -118,28 +115,7 @@ public class FileController {
             @RequestParam String keyword,
             @RequestParam(defaultValue = "/") String parentPath) {
         log.info("搜索文件: engineId={}, keyword={}, parentPath={}", engineId, keyword, parentPath);
-        List<DirFile> dirFiles = dirFileSyncService.search(engineId, parentPath, keyword);
-        List<FileItem> items = new ArrayList<>();
-        for (DirFile df : dirFiles) {
-            FileItem fi = new FileItem();
-            fi.setName(df.getName());
-            fi.setIsDir(df.getIsDir());
-            fi.setSize(df.getSize());
-            fi.setExt(df.getExt());
-            String fullPath = df.getParentPath().endsWith("/")
-                    ? df.getParentPath() + df.getName()
-                    : df.getParentPath() + "/" + df.getName();
-            fi.setPath(fullPath);
-            if (df.getIsDir()) {
-                fi.setUrl(df.getThumbnailUrl());
-            } else if (fileBrowseService.isVideoFile(df.getName())) {
-                fi.setUrl("/api/files/stream/" + engineId + "/" + encodePath(fullPath));
-            } else if (fileBrowseService.isImageFile(df.getName())) {
-                fi.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(fullPath));
-            }
-            items.add(fi);
-        }
-        return ApiResponse.success(items);
+        return ApiResponse.success(fileBrowseService.searchFiles(engineId, parentPath, keyword));
     }
 
     /**
@@ -148,7 +124,7 @@ public class FileController {
     @PostMapping("/sync")
     public ApiResponse<String> triggerSync(@RequestParam Long engineId) {
         log.info("手动触发同步: engineId={}", engineId);
-        dirFileSyncService.syncDirectory(engineId, "/");
+        dirFileSyncService.syncEngine(engineId);
         log.info("手动同步完成: engineId={}", engineId);
         return ApiResponse.success("同步完成");
     }
@@ -349,14 +325,4 @@ public class FileController {
         };
     }
 
-    private String encodePath(String path) {
-        String p = path.startsWith("/") ? path.substring(1) : path;
-        String[] segments = p.split("/", -1);
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < segments.length; i++) {
-            if (i > 0) sb.append("/");
-            sb.append(URLEncoder.encode(segments[i], StandardCharsets.UTF_8));
-        }
-        return sb.toString();
-    }
 }
