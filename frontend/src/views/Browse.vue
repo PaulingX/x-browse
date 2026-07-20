@@ -778,13 +778,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-@media (max-width: 400px) {
-  .grid-layout {
-    grid-template-columns: repeat(4, 1fr);
-  }
-}
-
-@media (max-width: 320px) {
+@media (max-width: 768px) {
   .grid-layout {
     grid-template-columns: repeat(3, 1fr);
   }

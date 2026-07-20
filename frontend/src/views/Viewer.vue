@@ -173,7 +173,7 @@ function scrollToIndex(index) {
   if (!scrollContainer.value) return
   const items = scrollContainer.value.children
   if (items[index]) {
-    items[index].scrollIntoView({ behavior: 'instant' })
+    scrollContainer.value.scrollTo({ top: items[index].offsetTop, behavior: 'auto' })
   }
 }
 
@@ -334,15 +334,13 @@ onUnmounted(() => {
   height: 100%;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  scroll-snap-type: y mandatory;
 }
 
 .image-item {
   width: 100%;
-  scroll-snap-align: start;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-start;
 }
 
 .scroll-image {
