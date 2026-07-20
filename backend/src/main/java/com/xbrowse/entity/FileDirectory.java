@@ -2,15 +2,16 @@ package com.xbrowse.entity;
 
 import jakarta.persistence.*;
 import org.hibernate.annotations.GenericGenerator;
+
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "dir_file", indexes = {
-    @Index(name = "idx_dirfile_directory", columnList = "directory_id"),
-    @Index(name = "idx_dirfile_directory_name", columnList = "directory_id, name"),
-    @Index(name = "idx_dirfile_name", columnList = "name")
+@Table(name = "file_directory", indexes = {
+    @Index(name = "idx_filedir_engine_parent", columnList = "engine_id, parent_id"),
+    @Index(name = "idx_filedir_engine_path", columnList = "engine_id, path", unique = true),
+    @Index(name = "idx_filedir_name", columnList = "name")
 })
-public class DirFile {
+public class FileDirectory {
 
     @Id
     @GeneratedValue(generator = "sqlite-id")
@@ -20,23 +21,14 @@ public class DirFile {
     @Column(name = "engine_id", nullable = false)
     private Long engineId;
 
-    @Column(name = "directory_id")
-    private Long directoryId;
+    @Column(name = "parent_id")
+    private Long parentId;
 
-    @Column(name = "parent_path", nullable = false, length = 1000)
-    private String parentPath;
+    @Column(nullable = false, length = 1000)
+    private String path;
 
     @Column(nullable = false, length = 500)
     private String name;
-
-    @Column(name = "is_dir", nullable = false)
-    private Boolean isDir;
-
-    @Column(name = "file_size")
-    private Long size;
-
-    @Column(length = 20)
-    private String ext;
 
     @Column(name = "thumbnail_url", length = 1000)
     private String thumbnailUrl;
@@ -52,22 +44,21 @@ public class DirFile {
         syncTime = LocalDateTime.now();
     }
 
+    @PreUpdate
+    protected void onUpdate() {
+        syncTime = LocalDateTime.now();
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public Long getEngineId() { return engineId; }
     public void setEngineId(Long engineId) { this.engineId = engineId; }
-    public Long getDirectoryId() { return directoryId; }
-    public void setDirectoryId(Long directoryId) { this.directoryId = directoryId; }
-    public String getParentPath() { return parentPath; }
-    public void setParentPath(String parentPath) { this.parentPath = parentPath; }
+    public Long getParentId() { return parentId; }
+    public void setParentId(Long parentId) { this.parentId = parentId; }
+    public String getPath() { return path; }
+    public void setPath(String path) { this.path = path; }
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
-    public Boolean getIsDir() { return isDir; }
-    public void setIsDir(Boolean isDir) { this.isDir = isDir; }
-    public Long getSize() { return size; }
-    public void setSize(Long size) { this.size = size; }
-    public String getExt() { return ext; }
-    public void setExt(String ext) { this.ext = ext; }
     public String getThumbnailUrl() { return thumbnailUrl; }
     public void setThumbnailUrl(String thumbnailUrl) { this.thumbnailUrl = thumbnailUrl; }
     public Long getModifiedTime() { return modifiedTime; }
