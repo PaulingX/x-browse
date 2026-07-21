@@ -15,6 +15,19 @@
   --shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
   --radius: 8px;
   --radius-lg: 12px;
+
+  /* Vant Toast：深底白字 */
+  --van-toast-background: rgba(50, 50, 51, 0.92);
+  --van-toast-text-color: #ffffff;
+  --van-toast-border-radius: 8px;
+  --van-toast-font-size: 14px;
+
+  /* Vant Dialog：白底深字 */
+  --van-dialog-background: #ffffff;
+  --van-dialog-header-font-weight: 600;
+  --van-dialog-has-title-message-text-color: #646566;
+  --van-dialog-message-text-color: #646566;
+  --van-dialog-confirm-button-text-color: #1989fa;
 }
 
 * {
@@ -23,41 +36,72 @@
   box-sizing: border-box;
 }
 
-/* 修复 Vant 弹窗/对话框白色文字问题 */
+/* 对话框 / 底部弹层：白底深字，避免白字看不清 */
 .van-dialog,
 .van-popup,
 .van-action-sheet {
   color: var(--text-color) !important;
+  background: var(--bg-color-white) !important;
 }
 
 .van-dialog__header,
 .van-dialog__message,
+.van-dialog__content,
 .van-dialog__footer,
 .van-popup__header,
+.van-action-sheet__header,
 .van-action-sheet__name,
-.van-action-sheet__description {
+.van-action-sheet__description,
+.van-action-sheet__item {
   color: var(--text-color) !important;
 }
 
-.van-dialog__confirm,
+.van-dialog__message {
+  color: var(--text-color-2) !important;
+}
+
 .van-dialog__cancel {
   color: var(--text-color) !important;
 }
 
-.van-dialog__confirm--confirm {
+.van-dialog__confirm {
   color: var(--primary-color) !important;
 }
 
-/* Toast 样式修复 */
-.van-toast {
+/* Toast：深色底 + 白字（解决“更新成功”等提示白底白字） */
+.van-toast,
+.van-toast.xbrowse-toast,
+.xbrowse-toast {
+  color: #fff !important;
+  background: rgba(50, 50, 51, 0.92) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2) !important;
+}
+
+.van-toast--text,
+.van-toast--html {
+  min-width: 96px;
+  padding: 10px 16px !important;
+}
+
+.van-toast__text,
+.van-toast .van-toast__text {
+  color: #fff !important;
+  font-size: 14px !important;
+  line-height: 1.4 !important;
+}
+
+.van-toast__icon,
+.van-toast .van-icon {
   color: #fff !important;
 }
 
-.van-toast__text {
+/* Notify 提示条 */
+.van-notify {
   color: #fff !important;
 }
 
-/* Confirm 对话框 */
+/* Confirm 对话框（兼容类名） */
 .van-confirm__header {
   color: var(--text-color) !important;
 }
@@ -66,9 +110,12 @@
   color: var(--text-color-2) !important;
 }
 
-.van-confirm__cancel,
-.van-confirm__confirm {
+.van-confirm__cancel {
   color: var(--text-color) !important;
+}
+
+.van-confirm__confirm {
+  color: var(--primary-color) !important;
 }
 
 body {
