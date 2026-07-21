@@ -14,7 +14,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -57,6 +59,8 @@ public class FileBrowseService {
         } else {
             items = listFromAlist(engineId, path, true);
         }
+        // 分页前关联同名封面，避免封面图与视频不在同一页时丢失
+        applyVideoCoverThumbnails(engineId, items);
         return paginate(sortItems(items, sortMode), page, perPage);
     }
 
@@ -77,7 +81,85 @@ public class FileBrowseService {
         items.addAll(dirFileRepository.searchByNameAndDirectoryId(directoryId, keyword).stream()
                 .map(df -> toFileItem(df, engineId))
                 .toList());
+        applyVideoCoverThumbnails(engineId, items);
         return sortItems(items, "name_asc");
+    }
+
+    /**
+     * 同目录下若存在与视频同名的图片（扩展名不同），则作为视频列表预览图。
+     * 例如：demo.mp4 + demo.jpg → 使用 demo.jpg 作为封面。
+     */
+    private void applyVideoCoverThumbnails(Long engineId, List<FileItem> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        // baseName(小写) -> 封面图项（多图时取优先级更高的）
+        Map<String, FileItem> coverByBase = new HashMap<>();
+        for (FileItem item : items) {
+            if (Boolean.TRUE.equals(item.getIsDir()) || item.getName() == null) {
+                continue;
+            }
+            if (!MediaTypes.isImage(item.getName())) {
+                continue;
+            }
+            String base = baseNameWithoutExt(item.getName()).toLowerCase();
+            if (base.isEmpty()) {
+                continue;
+            }
+            FileItem existing = coverByBase.get(base);
+            if (existing == null || coverImagePriority(item.getName()) < coverImagePriority(existing.getName())) {
+                coverByBase.put(base, item);
+            }
+        }
+        if (coverByBase.isEmpty()) {
+            return;
+        }
+        for (FileItem item : items) {
+            if (Boolean.TRUE.equals(item.getIsDir()) || item.getName() == null) {
+                continue;
+            }
+            if (!MediaTypes.isVideo(item.getName())) {
+                continue;
+            }
+            FileItem cover = coverByBase.get(baseNameWithoutExt(item.getName()).toLowerCase());
+            if (cover == null) {
+                continue;
+            }
+            String thumb = cover.getUrl();
+            if (thumb == null || thumb.isEmpty()) {
+                thumb = MediaTypes.proxyUrl(engineId, cover.getPath());
+            }
+            item.setThumbnailUrl(thumb);
+        }
+    }
+
+    /**
+     * 去掉最后一个扩展名，得到主文件名
+     */
+    private String baseNameWithoutExt(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot <= 0) {
+            return fileName;
+        }
+        return fileName.substring(0, dot);
+    }
+
+    /**
+     * 封面图扩展名优先级（数值越小越优先）
+     */
+    private int coverImagePriority(String fileName) {
+        String ext = MediaTypes.extensionOf(fileName);
+        if (ext == null) {
+            return 100;
+        }
+        return switch (ext) {
+            case "jpg", "jpeg" -> 1;
+            case "png" -> 2;
+            case "webp" -> 3;
+            case "gif" -> 4;
+            case "bmp" -> 5;
+            default -> 50;
+        };
     }
 
     /**

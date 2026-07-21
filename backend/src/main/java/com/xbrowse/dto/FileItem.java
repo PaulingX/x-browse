@@ -9,7 +9,10 @@ public class FileItem {
     private Boolean isDir;
     private Long size;
     private Long modified;
+    /** 媒体访问地址（图片代理 / 视频流） */
     private String url;
+    /** 列表预览图（如视频同名封面图） */
+    private String thumbnailUrl;
     private String path;
     private String ext;
 
@@ -23,6 +26,8 @@ public class FileItem {
     public void setModified(Long modified) { this.modified = modified; }
     public String getUrl() { return url; }
     public void setUrl(String url) { this.url = url; }
+    public String getThumbnailUrl() { return thumbnailUrl; }
+    public void setThumbnailUrl(String thumbnailUrl) { this.thumbnailUrl = thumbnailUrl; }
     public String getPath() { return path; }
     public void setPath(String path) { this.path = path; }
     public String getExt() { return ext; }

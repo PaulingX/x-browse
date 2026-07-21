@@ -77,6 +77,7 @@
         ref="videoRef"
         :key="(currentFile?.path || currentFile?.url || '') + '-' + videoRetryKey"
         :src="currentFile?.url"
+        :poster="currentFile?.thumbnailUrl || undefined"
         controls
         playsinline
         preload="metadata"

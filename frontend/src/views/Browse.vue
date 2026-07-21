@@ -72,6 +72,16 @@
               @load="onThumbLoad($event, item.url)"
               @error="handleImgError"
             />
+            <div v-else-if="isVideo(item.ext) && item.thumbnailUrl" class="video-thumb-wrap">
+              <img
+                :src="item.thumbnailUrl"
+                :alt="item.name"
+                class="file-thumbnail"
+                loading="lazy"
+                @error="handleImgError"
+              />
+              <van-icon name="play-circle-o" class="video-play-badge" />
+            </div>
             <van-icon
               v-else
               :name="getFileIcon(item.ext)"
@@ -97,7 +107,7 @@
         v-for="(item, index) in displayImageFiles"
         :key="item.name"
         class="waterfall-item"
-        @click="openViewer(index)"
+        @click="openViewer(item)"
       >
         <img :src="item.url" :alt="item.name" loading="lazy" />
       </div>
@@ -753,6 +763,26 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.video-thumb-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.video-thumb-wrap .file-thumbnail {
+  display: block;
+}
+
+.video-play-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  color: #fff;
+  font-size: 18px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+  pointer-events: none;
 }
 
 .dir-preview {
