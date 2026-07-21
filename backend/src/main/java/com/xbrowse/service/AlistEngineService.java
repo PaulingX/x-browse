@@ -4,52 +4,46 @@ import com.xbrowse.dto.AlistEngineDTO;
 import com.xbrowse.entity.AlistEngine;
 import com.xbrowse.repository.AlistEngineRepository;
 import com.xbrowse.util.AlistClient;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 /**
  * Alist 引擎管理服务
+ * <p>
+ * 管理 Alist 连接配置，并缓存 AlistClient 实例。
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class AlistEngineService {
 
     private final AlistEngineRepository engineRepository;
 
-    /**
-     * 客户端缓存，key 为引擎 ID
-     */
+    /** 客户端缓存，key 为引擎 ID */
     private final ConcurrentHashMap<Long, AlistClient> clientCache = new ConcurrentHashMap<>();
-
-    public AlistEngineService(AlistEngineRepository engineRepository) {
-        this.engineRepository = engineRepository;
-    }
 
     /**
      * 获取所有引擎列表
      */
     public List<AlistEngineDTO> listEngines() {
-        return engineRepository.findAll().stream()
-                .map(this::toDTO)
-                .collect(Collectors.toList());
+        return engineRepository.findAll().stream().map(this::toDTO).toList();
     }
 
     /**
      * 根据 ID 获取引擎
      */
     public AlistEngineDTO getEngine(Long id) {
-        AlistEngine engine = engineRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("引擎不存在"));
-        return toDTO(engine);
+        return toDTO(engineRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("引擎不存在")));
     }
 
     /**
-     * 添加引擎
+     * 添加引擎（会先验证 Alist 连接）
      */
     @Transactional
     public AlistEngineDTO addEngine(AlistEngineDTO dto) {
@@ -63,18 +57,15 @@ public class AlistEngineService {
         engine.setUrl(dto.getUrl());
         engine.setToken(dto.getToken());
         engine.setUserName(userName);
-
         engine = engineRepository.save(engine);
-
         // 缓存客户端
         clientCache.put(engine.getId(), client);
         log.info("引擎添加成功: id={}, remark={}", engine.getId(), engine.getRemark());
-
         return toDTO(engine);
     }
 
     /**
-     * 更新引擎
+     * 更新引擎；地址或令牌变更时重新验证并刷新客户端缓存
      */
     @Transactional
     public AlistEngineDTO updateEngine(Long id, AlistEngineDTO dto) {
@@ -82,38 +73,31 @@ public class AlistEngineService {
         AlistEngine engine = engineRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("引擎不存在"));
 
-        // 如果地址或令牌变更，验证新连接
         boolean urlChanged = !engine.getUrl().equals(dto.getUrl());
         boolean tokenChanged = !engine.getToken().equals(dto.getToken());
-
         if (urlChanged || tokenChanged) {
             AlistClient client = new AlistClient(dto.getUrl(), dto.getToken());
-            String userName = client.getCurrentUser();
-            engine.setUserName(userName);
+            engine.setUserName(client.getCurrentUser());
             clientCache.put(id, client);
         }
-
         engine.setRemark(dto.getRemark());
         engine.setUrl(dto.getUrl());
         engine.setToken(dto.getToken());
-
-        engine = engineRepository.save(engine);
-        return toDTO(engine);
+        return toDTO(engineRepository.save(engine));
     }
 
     /**
-     * 删除引擎
+     * 删除引擎并移除客户端缓存
      */
     @Transactional
     public void deleteEngine(Long id) {
         log.info("删除引擎: id={}", id);
         engineRepository.deleteById(id);
         clientCache.remove(id);
-        log.info("引擎删除成功: id={}", id);
     }
 
     /**
-     * 获取或创建 Alist 客户端
+     * 获取或创建 Alist 客户端（带缓存）
      */
     public AlistClient getClient(Long engineId) {
         return clientCache.computeIfAbsent(engineId, id -> {
@@ -124,14 +108,12 @@ public class AlistEngineService {
     }
 
     /**
-     * 测试引擎连接，返回错误信息（成功时为null）
+     * 测试引擎连接，成功返回 null，失败返回错误信息
      */
     public String testConnection(AlistEngineDTO dto) {
         log.info("测试引擎连接: url={}", dto.getUrl());
         try {
-            AlistClient client = new AlistClient(dto.getUrl(), dto.getToken());
-            client.getCurrentUser();
-            log.info("引擎连接测试成功: url={}", dto.getUrl());
+            new AlistClient(dto.getUrl(), dto.getToken()).getCurrentUser();
             return null;
         } catch (Exception e) {
             String msg = e.getMessage();
@@ -148,7 +130,7 @@ public class AlistEngineService {
     }
 
     /**
-     * 实体转 DTO
+     * 实体转 DTO（不返回 token）
      */
     private AlistEngineDTO toDTO(AlistEngine engine) {
         AlistEngineDTO dto = new AlistEngineDTO();
@@ -156,7 +138,6 @@ public class AlistEngineService {
         dto.setRemark(engine.getRemark());
         dto.setUrl(engine.getUrl());
         dto.setUserName(engine.getUserName());
-        // 不返回 token
         return dto;
     }
 }

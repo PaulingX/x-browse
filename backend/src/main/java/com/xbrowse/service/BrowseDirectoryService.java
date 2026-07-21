@@ -4,66 +4,55 @@ import com.xbrowse.dto.BrowseDirectoryDTO;
 import com.xbrowse.entity.BrowseDirectory;
 import com.xbrowse.repository.BrowseDirectoryRepository;
 import com.xbrowse.repository.UserDirectoryRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 浏览目录管理服务
+ * <p>
+ * 管理管理员配置的浏览根路径；添加后会触发该路径下的目录同步。
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class BrowseDirectoryService {
 
     private final BrowseDirectoryRepository directoryRepository;
     private final UserDirectoryRepository userDirectoryRepository;
     private final DirFileSyncService dirFileSyncService;
 
-    public BrowseDirectoryService(BrowseDirectoryRepository directoryRepository,
-                                  UserDirectoryRepository userDirectoryRepository,
-                                  DirFileSyncService dirFileSyncService) {
-        this.directoryRepository = directoryRepository;
-        this.userDirectoryRepository = userDirectoryRepository;
-        this.dirFileSyncService = dirFileSyncService;
-    }
-
     /**
-     * 获取所有目录列表
+     * 获取所有浏览目录列表
      */
     public List<BrowseDirectoryDTO> listDirectories() {
-        return directoryRepository.findAll().stream()
-                .map(this::toDTO)
-                .collect(Collectors.toList());
+        return directoryRepository.findAll().stream().map(this::toDTO).toList();
     }
 
     /**
-     * 根据引擎 ID 获取目录列表
+     * 根据引擎 ID 获取浏览目录列表
      */
     public List<BrowseDirectoryDTO> listByEngineId(Long engineId) {
-        return directoryRepository.findByEngineId(engineId).stream()
-                .map(this::toDTO)
-                .collect(Collectors.toList());
+        return directoryRepository.findByEngineId(engineId).stream().map(this::toDTO).toList();
     }
 
     /**
-     * 添加目录，保存后同步该路径下的 file_directory / dir_file
+     * 添加浏览目录，保存后同步该路径下的 file_directory / dir_file
      */
     public BrowseDirectoryDTO addDirectory(BrowseDirectoryDTO dto) {
-        // 检查是否已存在
         if (directoryRepository.existsByEngineIdAndPath(dto.getEngineId(), dto.getPath())) {
             throw new RuntimeException("该目录已存在");
         }
-
         BrowseDirectory directory = new BrowseDirectory();
         directory.setEngineId(dto.getEngineId());
         directory.setPath(dto.getPath());
         directory.setName(dto.getName());
         directory.setThumbnailEnabled(dto.getThumbnailEnabled());
-
         directory = directoryRepository.save(directory);
+
         BrowseDirectoryDTO result = toDTO(directory);
         try {
             log.info("浏览目录已添加，开始同步: engineId={}, path={}", directory.getEngineId(), directory.getPath());
@@ -75,26 +64,22 @@ public class BrowseDirectoryService {
     }
 
     /**
-     * 更新目录
+     * 更新浏览目录显示名与缩略图开关
      */
     @Transactional
     public BrowseDirectoryDTO updateDirectory(Long id, BrowseDirectoryDTO dto) {
         BrowseDirectory directory = directoryRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("目录不存在"));
-
         directory.setName(dto.getName());
         directory.setThumbnailEnabled(dto.getThumbnailEnabled());
-
-        directory = directoryRepository.save(directory);
-        return toDTO(directory);
+        return toDTO(directoryRepository.save(directory));
     }
 
     /**
-     * 删除目录
+     * 删除浏览目录，并清理用户权限关联
      */
     @Transactional
     public void deleteDirectory(Long id) {
-        // 删除相关权限
         userDirectoryRepository.deleteByDirectoryId(id);
         directoryRepository.deleteById(id);
     }

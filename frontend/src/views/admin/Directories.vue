@@ -2,7 +2,7 @@
   <div class="admin-section">
     <div class="section-header">
       <span>浏览目录</span>
-      <van-button type="primary" size="small" @click="showAdd = true">
+      <van-button type="primary" size="small" @click="openAdd">
         <van-icon name="plus" /> 添加
       </van-button>
     </div>
@@ -202,6 +202,18 @@ async function loadData() {
   } catch (error) {
     console.error('加载数据失败:', error)
   }
+}
+
+// 打开添加弹窗：仅一个引擎时默认选中
+function openAdd() {
+  editingDir.value = null
+  form.value = {
+    engineId: engines.value.length === 1 ? engines.value[0].id : null,
+    path: '',
+    name: '',
+    thumbnailEnabled: true
+  }
+  showAdd.value = true
 }
 
 // 选择引擎

@@ -2,14 +2,17 @@ package com.xbrowse.controller;
 
 import com.xbrowse.dto.ApiResponse;
 import com.xbrowse.dto.FileItem;
-import com.xbrowse.entity.AlistEngine;
-import com.xbrowse.repository.AlistEngineRepository;
+import com.xbrowse.service.AlistEngineService;
 import com.xbrowse.service.DirFileSyncService;
 import com.xbrowse.service.FileBrowseService;
 import com.xbrowse.service.ThumbnailCacheService;
 import com.xbrowse.util.AlistClient;
+import com.xbrowse.util.MediaTypes;
+import com.xbrowse.util.PathUtils;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
@@ -20,47 +23,44 @@ import org.springframework.web.bind.annotation.*;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * 文件浏览控制器
+ * <p>
+ * 提供目录列表、搜索、同步、预览图、文件代理与视频流式播放接口。
  */
 @Slf4j
 @RestController
 @RequestMapping("/api/files")
+@RequiredArgsConstructor
 public class FileController {
+
+    /** 缓存预览图浏览器缓存时长（秒） */
+    private static final int CACHE_MAX_AGE_SECONDS = 86400;
+
+    /** HTTP 206 Partial Content */
+    private static final int PARTIAL_CONTENT = 206;
 
     private final FileBrowseService fileBrowseService;
     private final DirFileSyncService dirFileSyncService;
-    private final AlistEngineRepository engineRepository;
+    private final AlistEngineService engineService;
     private final ThumbnailCacheService thumbnailCacheService;
 
-    public FileController(FileBrowseService fileBrowseService,
-                          DirFileSyncService dirFileSyncService,
-                          AlistEngineRepository engineRepository,
-                          ThumbnailCacheService thumbnailCacheService) {
-        this.fileBrowseService = fileBrowseService;
-        this.dirFileSyncService = dirFileSyncService;
-        this.engineRepository = engineRepository;
-        this.thumbnailCacheService = thumbnailCacheService;
-    }
-
     /**
-     * 获取目录预览图（第一个图片文件的代理 URL）
+     * 批量获取目录预览图 URL
      */
     @GetMapping("/dir-thumbnail")
     public ApiResponse<Map<String, String>> getDirThumbnails(
             @RequestParam Long engineId,
             @RequestParam List<String> paths) {
         log.info("获取目录预览图: engineId={}, paths={}", engineId, paths.size());
-        java.util.Map<String, String> result = new java.util.LinkedHashMap<>();
+        Map<String, String> result = new LinkedHashMap<>();
         for (String dirPath : paths) {
-            String thumb = fileBrowseService.getDirThumbnail(engineId, dirPath);
-            result.put(dirPath, thumb);
+            result.put(dirPath, fileBrowseService.getDirThumbnail(engineId, dirPath));
         }
         return ApiResponse.success(result);
     }
@@ -76,29 +76,22 @@ public class FileController {
             @PathVariable Long engineId,
             HttpServletRequest request) {
         // 从请求 URI 中提取缓存文件名
-        String prefix = "/api/files/thumbnail/" + engineId + "/";
-        String uri = request.getRequestURI();
-        String cacheFileName = uri.substring(uri.indexOf(prefix) + prefix.length());
+        String cacheFileName = PathUtils.extractFilePath(engineId, request.getRequestURI(), "thumbnail")
+                .substring(1);
         log.debug("提供缓存预览图: engineId={}, cacheFileName={}", engineId, cacheFileName);
 
-        // 查找本地缓存文件
-        java.nio.file.Path cachePath = thumbnailCacheService.getCachedThumbnailPath(engineId, cacheFileName);
+        Path cachePath = thumbnailCacheService.getCachedThumbnailPath(engineId, cacheFileName);
         if (cachePath == null) {
-            log.warn("缓存预览图不存在: engineId={}, cacheFileName={}", engineId, cacheFileName);
             return ResponseEntity.notFound().build();
         }
-
         try {
             Resource resource = new UrlResource(cachePath.toUri());
             if (!resource.exists()) {
                 return ResponseEntity.notFound().build();
             }
-
-            // 根据扩展名设置 Content-Type
-            String contentType = getContentType(cacheFileName);
             return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .header(HttpHeaders.CACHE_CONTROL, "max-age=86400")
+                    .contentType(MediaType.parseMediaType(MediaTypes.contentType(cacheFileName)))
+                    .header(HttpHeaders.CACHE_CONTROL, "max-age=" + CACHE_MAX_AGE_SECONDS)
                     .body(resource);
         } catch (Exception e) {
             log.error("读取缓存预览图失败: engineId={}, cacheFileName={}", engineId, cacheFileName, e);
@@ -114,23 +107,23 @@ public class FileController {
             @RequestParam Long engineId,
             @RequestParam String keyword,
             @RequestParam(defaultValue = "/") String parentPath) {
-        log.info("搜索文件: engineId={}, keyword={}, parentPath={}", engineId, keyword, parentPath);
         return ApiResponse.success(fileBrowseService.searchFiles(engineId, parentPath, keyword));
     }
 
     /**
-     * 手动触发目录同步
+     * 手动触发引擎下已配置浏览目录的同步
      */
     @PostMapping("/sync")
     public ApiResponse<String> triggerSync(@RequestParam Long engineId) {
         log.info("手动触发同步: engineId={}", engineId);
         dirFileSyncService.syncEngine(engineId);
-        log.info("手动同步完成: engineId={}", engineId);
         return ApiResponse.success("同步完成");
     }
 
     /**
      * 浏览目录
+     *
+     * @param refresh true 时直连 Alist；false 时优先读本地缓存
      */
     @GetMapping("/list")
     public ApiResponse<List<FileItem>> listFiles(
@@ -140,45 +133,23 @@ public class FileController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int perPage,
             @RequestParam(defaultValue = "name_asc") String sort) {
-        log.debug("浏览目录: engineId={}, path={}, page={}, perPage={}, sort={}", engineId, path, page, perPage, sort);
         return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh, page, perPage, sort));
     }
 
     /**
-     * 代理获取文件（用于跨域或需要认证的文件）
+     * 代理获取文件（用于跨域或需要认证的图片等）
+     * <p>
+     * 路径中可包含中文，由 PathUtils 按 UTF-8 解码。
      */
     @GetMapping("/proxy/{engineId}/**")
-    public ResponseEntity<Resource> proxyFile(
-            @PathVariable Long engineId,
-            HttpServletRequest request) {
+    public ResponseEntity<Resource> proxyFile(@PathVariable Long engineId, HttpServletRequest request) {
         try {
-            String fullPath = extractProxyPath(engineId, request.getRequestURI());
-            log.debug("代理文件: engineId={}, path={}", engineId, fullPath);
-            String contentType = getContentType(fullPath);
-
-            AlistEngine engine = getEngine(engineId);
-            AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
-
-            String fileUrl = client.getFileUrl(fullPath);
+            String fullPath = PathUtils.extractFilePath(engineId, request.getRequestURI(), "proxy");
+            String fileUrl = resolveFileUrl(engineId, fullPath);
             if (fileUrl == null) {
                 return ResponseEntity.notFound().build();
             }
-
-            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(30000);
-            connection.setReadTimeout(30000);
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.parseMediaType(contentType));
-
-            InputStream inputStream = connection.getInputStream();
-            Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
-
-            return ResponseEntity.ok()
-                    .headers(headers)
-                    .body(resource);
-
+            return openUpstream(fileUrl, MediaTypes.contentType(fullPath), null, null);
         } catch (Exception e) {
             log.error("代理文件失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
@@ -194,80 +165,94 @@ public class FileController {
             @RequestHeader(value = "Range", required = false) String range,
             HttpServletRequest request) {
         try {
-            String fullPath = extractStreamPath(engineId, request.getRequestURI());
-            log.debug("流媒体播放: engineId={}, path={}, range={}", engineId, fullPath, range);
-
-            AlistEngine engine = getEngine(engineId);
-            AlistClient client = new AlistClient(engine.getUrl(), engine.getToken());
-            String fileUrl = client.getFileUrl(fullPath);
-
+            String fullPath = PathUtils.extractFilePath(engineId, request.getRequestURI(), "stream");
+            String fileUrl = resolveFileUrl(engineId, fullPath);
             if (fileUrl == null) {
                 return ResponseEntity.notFound().build();
             }
-
-            String contentType = getContentType(fullPath);
-
+            String contentType = MediaTypes.contentType(fullPath);
+            // 无 Range：整文件返回，并声明支持字节范围
             if (range == null) {
-                HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-                connection.setConnectTimeout(30000);
-                connection.setReadTimeout(30000);
-                InputStream inputStream = connection.getInputStream();
-                Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                        .body(resource);
+                return openUpstream(fileUrl, contentType, null, Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"));
             }
 
-            long fileSize = getFileSize(fileUrl);
+            long fileSize = headContentLength(fileUrl);
+            // 无法获取大小时回退为整文件
             if (fileSize <= 0) {
-                HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-                connection.setConnectTimeout(30000);
-                connection.setReadTimeout(30000);
-                InputStream inputStream = connection.getInputStream();
-                Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                        .body(resource);
+                return openUpstream(fileUrl, contentType, null, Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"));
             }
 
+            // 解析 Range: bytes=start-end
             long start = 0;
             long end = fileSize - 1;
-            String rangeValue = range.replace("bytes=", "");
-            String[] parts = rangeValue.split("-");
+            String[] parts = range.replace("bytes=", "").split("-");
             start = Long.parseLong(parts[0]);
             if (parts.length > 1 && !parts[1].isEmpty()) {
                 end = Long.parseLong(parts[1]);
             }
             long contentLength = end - start + 1;
-
-            HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-            connection.setRequestProperty("Range", "bytes=" + start + "-" + end);
-            connection.setConnectTimeout(30000);
-            connection.setReadTimeout(30000);
-            InputStream inputStream = connection.getInputStream();
-            Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
-
-            return ResponseEntity.status(206)
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
-                    .header(HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + fileSize)
-                    .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength))
-                    .body(resource);
-
+            Map<String, String> headers = Map.of(
+                    HttpHeaders.ACCEPT_RANGES, "bytes",
+                    HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + fileSize,
+                    HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength)
+            );
+            return openUpstream(fileUrl, contentType, "bytes=" + start + "-" + end, headers, PARTIAL_CONTENT);
         } catch (Exception e) {
             log.error("流媒体播放失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
         }
     }
 
-    private long getFileSize(String fileUrl) {
+    /**
+     * 通过引擎客户端解析 Alist 原始文件地址
+     */
+    private String resolveFileUrl(Long engineId, String fullPath) {
+        AlistClient client = engineService.getClient(engineId);
+        return client.getFileUrl(fullPath);
+    }
+
+    /**
+     * 打开上游 HTTP 资源并包装为响应（默认 200）
+     */
+    private ResponseEntity<Resource> openUpstream(String fileUrl, String contentType,
+                                                   String rangeHeader, Map<String, String> extraHeaders) throws Exception {
+        return openUpstream(fileUrl, contentType, rangeHeader, extraHeaders, 200);
+    }
+
+    /**
+     * 打开上游 HTTP 资源并包装为响应
+     *
+     * @param rangeHeader 可选 Range 请求头
+     * @param status      HTTP 状态码（200 或 206）
+     */
+    private ResponseEntity<Resource> openUpstream(String fileUrl, String contentType,
+                                                   String rangeHeader, Map<String, String> extraHeaders,
+                                                   int status) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(MediaTypes.connectTimeoutMs());
+        connection.setReadTimeout(MediaTypes.readTimeoutMs());
+        if (rangeHeader != null) {
+            connection.setRequestProperty("Range", rangeHeader);
+        }
+        InputStream inputStream = connection.getInputStream();
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status)
+                .contentType(MediaType.parseMediaType(contentType));
+        if (extraHeaders != null) {
+            extraHeaders.forEach(builder::header);
+        }
+        return builder.body(new InputStreamResource(inputStream));
+    }
+
+    /**
+     * HEAD 请求获取上游文件大小，失败返回 -1
+     */
+    private long headContentLength(String fileUrl) {
         try {
             HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
             connection.setRequestMethod("HEAD");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(10000);
+            connection.setConnectTimeout(MediaTypes.headTimeoutMs());
+            connection.setReadTimeout(MediaTypes.headTimeoutMs());
             long size = connection.getContentLengthLong();
             connection.disconnect();
             return size;
@@ -275,54 +260,4 @@ public class FileController {
             return -1;
         }
     }
-
-    private AlistEngine getEngine(Long engineId) {
-        Optional<AlistEngine> engineOpt = engineRepository.findById(engineId);
-        if (engineOpt.isEmpty()) {
-            throw new RuntimeException("引擎不存在: " + engineId);
-        }
-        return engineOpt.get();
-    }
-
-    private String extractProxyPath(Long engineId, String uri) {
-        String prefix = "/api/files/proxy/" + engineId + "/";
-        if (uri.startsWith(prefix)) {
-            String encoded = uri.substring(prefix.length());
-            String decoded = URLDecoder.decode(encoded, StandardCharsets.UTF_8);
-            return "/" + decoded;
-        }
-        return "/";
-    }
-
-    private String extractStreamPath(Long engineId, String uri) {
-        String prefix = "/api/files/stream/" + engineId + "/";
-        if (uri.startsWith(prefix)) {
-            String encoded = uri.substring(prefix.length());
-            String decoded = URLDecoder.decode(encoded, StandardCharsets.UTF_8);
-            return "/" + decoded;
-        }
-        return "/";
-    }
-
-    private String getContentType(String fileName) {
-        if (fileName == null) return "application/octet-stream";
-
-        int dotIndex = fileName.lastIndexOf('.');
-        if (dotIndex < 0) return "application/octet-stream";
-
-        String ext = fileName.substring(dotIndex + 1).toLowerCase();
-
-        return switch (ext) {
-            case "jpg", "jpeg" -> "image/jpeg";
-            case "png" -> "image/png";
-            case "gif" -> "image/gif";
-            case "webp" -> "image/webp";
-            case "svg" -> "image/svg+xml";
-            case "mp4" -> "video/mp4";
-            case "webm" -> "video/webm";
-            case "ogg" -> "video/ogg";
-            default -> "application/octet-stream";
-        };
-    }
-
 }

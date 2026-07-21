@@ -92,6 +92,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
+import { isImage as isImageExt, isVideo as isVideoExt } from '@/utils/file'
 
 const router = useRouter()
 const route = useRoute()
@@ -210,16 +211,6 @@ function onImageError(e) {
   if (!e.target.src.includes('placeholder')) {
     e.target.src = '/placeholder.svg'
   }
-}
-
-function isImageExt(ext) {
-  const exts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
-  return exts.includes(ext?.toLowerCase())
-}
-
-function isVideoExt(ext) {
-  const exts = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm']
-  return exts.includes(ext?.toLowerCase())
 }
 
 // 单张模式：触摸滑动

@@ -130,6 +130,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
+import { isImage, isVideo, formatSize, getFileIcon, getFileColor } from '@/utils/file'
 
 const router = useRouter()
 const route = useRoute()
@@ -204,28 +205,40 @@ const imageFiles = computed(() => {
   return files.value.filter((f) => !f.isDir && isImage(f.ext))
 })
 
+async function fetchPage(path, targetPage, { append = false, restoreY, preload = false } = {}) {
+  try {
+    const res = await api.get('/api/files/list', {
+      params: buildListParams(path, targetPage)
+    })
+    if (res.code !== 200) return
+    files.value = append ? [...files.value, ...res.data] : res.data
+    hasMore.value = res.data.length >= perPage.value
+    if (!append) {
+      dirThumbnails.value = {}
+    }
+    if (preload) {
+      preloadPageImages()
+      preloadNextPage()
+    }
+    observeDirCards()
+    nextTick(() => {
+      if (restoreY != null) window.scrollTo(0, restoreY)
+      setupSentinelObserver()
+    })
+  } catch (error) {
+    console.error('加载文件列表失败:', error)
+  }
+}
+
 async function loadFiles() {
   loading.value = true
   page.value = 1
   hasMore.value = true
   canLoadMoreOnIntersect = true
   try {
-    const res = await api.get('/api/files/list', {
-      params: buildListParams(currentPath.value, page.value)
-    })
-    if (res.code === 200) {
-      files.value = res.data
-      hasMore.value = res.data.length >= perPage.value
-      dirThumbnails.value = {}
-      preloadPageImages()
-      preloadNextPage()
-      observeDirCards()
-    }
-  } catch (error) {
-    console.error('加载文件列表失败:', error)
+    await fetchPage(currentPath.value, page.value, { preload: true })
   } finally {
     loading.value = false
-    nextTick(() => setupSentinelObserver())
   }
 }
 
@@ -234,16 +247,7 @@ async function loadMore() {
   loadingMore.value = true
   page.value++
   try {
-    const res = await api.get('/api/files/list', {
-      params: buildListParams(currentPath.value, page.value)
-    })
-    if (res.code === 200) {
-      files.value = [...files.value, ...res.data]
-      hasMore.value = res.data.length >= perPage.value
-      observeDirCards()
-    }
-  } catch (error) {
-    console.error('加载更多失败:', error)
+    await fetchPage(currentPath.value, page.value, { append: true })
   } finally {
     loadingMore.value = false
   }
@@ -298,6 +302,27 @@ function resetListState() {
   loadFiles()
 }
 
+async function restorePath(path, { showBack = false, preload = false } = {}) {
+  currentPath.value = path
+  showBackButton.value = showBack
+  searchText.value = ''
+  searchResults.value = []
+  router.replace({ query: { path } })
+
+  const cached = scrollPositions.get(path)
+  page.value = cached ? cached.page : 1
+  hasMore.value = true
+  loading.value = true
+  try {
+    await fetchPage(path, page.value, {
+      restoreY: cached ? cached.y : 0,
+      preload
+    })
+  } finally {
+    loading.value = false
+  }
+}
+
 function goBack() {
   searchText.value = ''
   searchResults.value = []
@@ -306,73 +331,21 @@ function goBack() {
     sessionStorage.removeItem(storageKey.value)
     sessionStorage.removeItem(scrollStorageKey.value)
     router.push('/')
+    return
+  }
+  const rootParts = rootPath.value.split('/').filter(Boolean)
+  const curParts = currentPath.value.split('/').filter(Boolean)
+  if (curParts.length > rootParts.length) {
+    curParts.pop()
+    const parentPath = '/' + curParts.join('/')
+    restorePath(parentPath.startsWith(rootPath.value) ? parentPath : rootPath.value)
   } else {
-    const rootParts = rootPath.value.split('/').filter(Boolean)
-    const curParts = currentPath.value.split('/').filter(Boolean)
-    if (curParts.length > rootParts.length) {
-      curParts.pop()
-      const parentPath = '/' + curParts.join('/')
-      currentPath.value = parentPath.startsWith(rootPath.value) ? parentPath : rootPath.value
-    } else {
-      currentPath.value = rootPath.value
-    }
-    router.replace({ query: { path: currentPath.value } })
-
-    const cached = scrollPositions.get(currentPath.value)
-    const restoreY = cached ? cached.y : 0
-    const restorePage = cached ? cached.page : 1
-
-    page.value = restorePage
-    hasMore.value = true
-    loading.value = true
-    api.get('/api/files/list', {
-      params: buildListParams(currentPath.value, restorePage)
-    }).then(res => {
-      if (res.code === 200) {
-        files.value = res.data
-        hasMore.value = res.data.length >= perPage.value
-        loading.value = false
-        nextTick(() => {
-          window.scrollTo(0, restoreY)
-          setupSentinelObserver()
-          observeDirCards()
-        })
-      }
-    }).catch(() => { loading.value = false })
+    restorePath(rootPath.value)
   }
 }
 
 function navigateTo(path) {
-  currentPath.value = path
-  showBackButton.value = false
-  searchText.value = ''
-  searchResults.value = []
-  router.replace({ query: { path } })
-
-  const cached = scrollPositions.get(path)
-  const restoreY = cached ? cached.y : 0
-  const restorePage = cached ? cached.page : 1
-
-  page.value = restorePage
-  hasMore.value = true
-  loading.value = true
-  api.get('/api/files/list', {
-    params: buildListParams(path, restorePage)
-  }).then(res => {
-    if (res.code === 200) {
-      files.value = res.data
-      hasMore.value = res.data.length >= perPage.value
-      loading.value = false
-      dirThumbnails.value = {}
-      preloadPageImages()
-      preloadNextPage()
-      observeDirCards()
-      nextTick(() => {
-        window.scrollTo(0, restoreY)
-        setupSentinelObserver()
-      })
-    }
-  }).catch(() => { loading.value = false })
+  restorePath(path, { showBack: false, preload: true })
 }
 
 function refresh() {
@@ -399,40 +372,6 @@ const sortLabel = computed(() => {
   const map = { name_asc: '名称 A→Z', name_desc: '名称 Z→A', time_asc: '时间 ↑', time_desc: '时间 ↓' }
   return map[sortMode.value]
 })
-
-function isImage(ext) {
-  const exts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
-  return exts.includes(ext?.toLowerCase())
-}
-
-function isVideo(ext) {
-  const exts = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm']
-  return exts.includes(ext?.toLowerCase())
-}
-
-function getFileIcon(ext) {
-  if (isImage(ext)) return 'photo-o'
-  if (isVideo(ext)) return 'video-o'
-  return 'description'
-}
-
-function getFileColor(ext) {
-  if (isImage(ext)) return '#07c160'
-  if (isVideo(ext)) return '#ff976a'
-  return '#969799'
-}
-
-function formatSize(bytes) {
-  if (!bytes) return ''
-  const units = ['B', 'KB', 'MB', 'GB']
-  let index = 0
-  let size = bytes
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024
-    index++
-  }
-  return `${size.toFixed(1)} ${units[index]}`
-}
 
 function handleImgError(e) {
   e.target.style.display = 'none'
