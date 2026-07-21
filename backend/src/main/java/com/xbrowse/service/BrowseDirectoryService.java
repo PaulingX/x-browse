@@ -2,11 +2,9 @@ package com.xbrowse.service;
 
 import com.xbrowse.dto.BrowseDirectoryDTO;
 import com.xbrowse.entity.BrowseDirectory;
-import com.xbrowse.entity.IndexedDirectory;
 import com.xbrowse.repository.BrowseDirectoryRepository;
-import com.xbrowse.repository.DirFileRepository;
-import com.xbrowse.repository.IndexedDirectoryRepository;
 import com.xbrowse.repository.UserDirectoryRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,22 +14,20 @@ import java.util.stream.Collectors;
 /**
  * 浏览目录管理服务
  */
+@Slf4j
 @Service
 public class BrowseDirectoryService {
 
     private final BrowseDirectoryRepository directoryRepository;
     private final UserDirectoryRepository userDirectoryRepository;
-    private final IndexedDirectoryRepository indexedDirectoryRepository;
-    private final DirFileRepository dirFileRepository;
+    private final DirFileSyncService dirFileSyncService;
 
     public BrowseDirectoryService(BrowseDirectoryRepository directoryRepository,
                                   UserDirectoryRepository userDirectoryRepository,
-                                  IndexedDirectoryRepository indexedDirectoryRepository,
-                                  DirFileRepository dirFileRepository) {
+                                  DirFileSyncService dirFileSyncService) {
         this.directoryRepository = directoryRepository;
         this.userDirectoryRepository = userDirectoryRepository;
-        this.indexedDirectoryRepository = indexedDirectoryRepository;
-        this.dirFileRepository = dirFileRepository;
+        this.dirFileSyncService = dirFileSyncService;
     }
 
     /**
@@ -53,24 +49,29 @@ public class BrowseDirectoryService {
     }
 
     /**
-     * 添加目录
+     * 添加目录，保存后同步该路径下的 file_directory / dir_file
      */
-    @Transactional
     public BrowseDirectoryDTO addDirectory(BrowseDirectoryDTO dto) {
-        String normalizedPath = normalizePath(dto.getPath());
         // 检查是否已存在
-        if (directoryRepository.existsByEngineIdAndPath(dto.getEngineId(), normalizedPath)) {
+        if (directoryRepository.existsByEngineIdAndPath(dto.getEngineId(), dto.getPath())) {
             throw new RuntimeException("该目录已存在");
         }
 
         BrowseDirectory directory = new BrowseDirectory();
         directory.setEngineId(dto.getEngineId());
-        directory.setPath(normalizedPath);
+        directory.setPath(dto.getPath());
         directory.setName(dto.getName());
         directory.setThumbnailEnabled(dto.getThumbnailEnabled());
 
         directory = directoryRepository.save(directory);
-        return toDTO(directory);
+        BrowseDirectoryDTO result = toDTO(directory);
+        try {
+            log.info("浏览目录已添加，开始同步: engineId={}, path={}", directory.getEngineId(), directory.getPath());
+            dirFileSyncService.syncDirectory(directory.getEngineId(), directory.getPath());
+        } catch (Exception e) {
+            log.error("添加浏览目录后同步失败: engineId={}, path={}", directory.getEngineId(), directory.getPath(), e);
+        }
+        return result;
     }
 
     /**
@@ -93,10 +94,6 @@ public class BrowseDirectoryService {
      */
     @Transactional
     public void deleteDirectory(Long id) {
-        for (IndexedDirectory indexedDirectory : indexedDirectoryRepository.findByBrowseDirectoryId(id)) {
-            dirFileRepository.deleteByDirectoryId(indexedDirectory.getId());
-        }
-        indexedDirectoryRepository.findByBrowseDirectoryId(id).forEach(indexedDirectoryRepository::delete);
         // 删除相关权限
         userDirectoryRepository.deleteByDirectoryId(id);
         directoryRepository.deleteById(id);
@@ -113,18 +110,5 @@ public class BrowseDirectoryService {
         dto.setName(directory.getName());
         dto.setThumbnailEnabled(directory.getThumbnailEnabled());
         return dto;
-    }
-
-    private String normalizePath(String path) {
-        if (path == null || path.isEmpty()) {
-            return "/";
-        }
-        if (!path.startsWith("/")) {
-            path = "/" + path;
-        }
-        if (path.length() > 1 && path.endsWith("/")) {
-            path = path.substring(0, path.length() - 1);
-        }
-        return path;
     }
 }

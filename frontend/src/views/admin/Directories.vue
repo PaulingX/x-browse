@@ -228,7 +228,7 @@ async function loadDirs(path) {
   dirLoading.value = true
   try {
     const res = await api.get('/api/files/list', {
-      params: { engineId: form.value.engineId, path, refresh: false, page: 1, perPage: 500 }
+      params: { engineId: form.value.engineId, path, refresh: true, page: 1, perPage: 500 }
     })
     if (res.code === 200) {
       dirItems.value = (res.data || []).filter(item => item.isDir)

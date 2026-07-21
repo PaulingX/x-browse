@@ -1,7 +1,9 @@
 package com.xbrowse.service;
 
+import com.xbrowse.entity.BrowseDirectory;
 import com.xbrowse.entity.DirFile;
 import com.xbrowse.entity.FileDirectory;
+import com.xbrowse.repository.BrowseDirectoryRepository;
 import com.xbrowse.repository.DirFileRepository;
 import com.xbrowse.repository.FileDirectoryRepository;
 import com.xbrowse.util.AlistClient;
@@ -21,6 +23,7 @@ public class DirFileSyncService {
 
     private final DirFileRepository dirFileRepository;
     private final FileDirectoryRepository fileDirectoryRepository;
+    private final BrowseDirectoryRepository browseDirectoryRepository;
     private final AlistEngineService engineService;
     private final TransactionTemplate txTemplate;
     private final ThumbnailCacheService thumbnailCacheService;
@@ -29,10 +32,12 @@ public class DirFileSyncService {
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico"
     );
 
-    public DirFileSyncService(DirFileRepository dirFileRepository, FileDirectoryRepository fileDirectoryRepository, AlistEngineService engineService,
+    public DirFileSyncService(DirFileRepository dirFileRepository, FileDirectoryRepository fileDirectoryRepository,
+                               BrowseDirectoryRepository browseDirectoryRepository, AlistEngineService engineService,
                                TransactionTemplate txTemplate, ThumbnailCacheService thumbnailCacheService) {
         this.dirFileRepository = dirFileRepository;
         this.fileDirectoryRepository = fileDirectoryRepository;
+        this.browseDirectoryRepository = browseDirectoryRepository;
         this.engineService = engineService;
         this.txTemplate = txTemplate;
         this.thumbnailCacheService = thumbnailCacheService;
@@ -43,13 +48,24 @@ public class DirFileSyncService {
         log.info("开始定时同步目录文件");
         long start = System.currentTimeMillis();
         try {
-            List<Long> engineIds = engineService.listEngines().stream()
-                    .map(e -> e.getId())
-                    .toList();
-            for (Long engineId : engineIds) {
-                log.info("开始同步引擎: engineId={}", engineId);
+            List<BrowseDirectory> roots = browseDirectoryRepository.findAll();
+            if (roots.isEmpty()) {
+                log.info("无浏览目录配置，跳过同步");
+                return;
+            }
+            Map<Long, List<BrowseDirectory>> byEngine = new LinkedHashMap<>();
+            for (BrowseDirectory root : roots) {
+                byEngine.computeIfAbsent(root.getEngineId(), k -> new ArrayList<>()).add(root);
+            }
+            for (Map.Entry<Long, List<BrowseDirectory>> entry : byEngine.entrySet()) {
+                Long engineId = entry.getKey();
+                log.info("开始同步引擎浏览目录: engineId={}, roots={}", engineId, entry.getValue().size());
                 AlistClient client = engineService.getClient(engineId);
-                syncRecursive(engineId, "/", null, client);
+                for (BrowseDirectory root : entry.getValue()) {
+                    String rootPath = normalizePath(root.getPath());
+                    Long parentId = resolveParentId(engineId, rootPath);
+                    syncRecursive(engineId, rootPath, parentId, client);
+                }
                 log.info("引擎同步完成: engineId={}", engineId);
             }
             log.info("定时同步目录文件完成, 耗时: {}ms", System.currentTimeMillis() - start);
@@ -58,16 +74,43 @@ public class DirFileSyncService {
         }
     }
 
+    /**
+     * 同步引擎下已配置的浏览目录（browse_directory），不整库扫描引擎根路径
+     */
+    public void syncEngine(Long engineId) {
+        List<BrowseDirectory> roots = browseDirectoryRepository.findByEngineId(engineId);
+        if (roots.isEmpty()) {
+            log.info("引擎无浏览目录，跳过同步: engineId={}", engineId);
+            return;
+        }
+        log.info("同步引擎浏览目录: engineId={}, roots={}", engineId, roots.size());
+        long start = System.currentTimeMillis();
+        AlistClient client = engineService.getClient(engineId);
+        for (BrowseDirectory root : roots) {
+            String rootPath = normalizePath(root.getPath());
+            Long parentId = resolveParentId(engineId, rootPath);
+            syncRecursive(engineId, rootPath, parentId, client);
+        }
+        log.info("引擎浏览目录同步完成: engineId={}, 耗时: {}ms", engineId, System.currentTimeMillis() - start);
+    }
+
     public void syncDirectory(Long engineId, String path) {
         log.info("手动同步目录: engineId={}, path={}", engineId, path);
         long start = System.currentTimeMillis();
         AlistClient client = engineService.getClient(engineId);
         String normalizedPath = normalizePath(path);
-        Long parentId = normalizedPath.equals("/") ? null : fileDirectoryRepository.findByEngineIdAndPath(engineId, parentOf(normalizedPath))
-                .map(FileDirectory::getId)
-                .orElse(null);
+        Long parentId = resolveParentId(engineId, normalizedPath);
         syncRecursive(engineId, normalizedPath, parentId, client);
         log.info("手动同步完成: engineId={}, path={}, 耗时: {}ms", engineId, path, System.currentTimeMillis() - start);
+    }
+
+    private Long resolveParentId(Long engineId, String path) {
+        if (path.equals("/")) {
+            return null;
+        }
+        return fileDirectoryRepository.findByEngineIdAndPath(engineId, parentOf(path))
+                .map(FileDirectory::getId)
+                .orElse(null);
     }
 
     private void syncRecursive(Long engineId, String path, Long parentId, AlistClient client) {

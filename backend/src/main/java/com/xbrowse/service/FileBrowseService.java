@@ -5,6 +5,7 @@ import com.xbrowse.entity.DirFile;
 import com.xbrowse.entity.FileDirectory;
 import com.xbrowse.repository.DirFileRepository;
 import com.xbrowse.repository.FileDirectoryRepository;
+import com.xbrowse.util.AlistClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +22,7 @@ public class FileBrowseService {
 
     private final DirFileRepository dirFileRepository;
     private final FileDirectoryRepository fileDirectoryRepository;
+    private final AlistEngineService engineService;
 
     /**
      * 图片扩展名
@@ -36,35 +38,67 @@ public class FileBrowseService {
             "mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"
     );
 
-    public FileBrowseService(DirFileRepository dirFileRepository, FileDirectoryRepository fileDirectoryRepository) {
+    public FileBrowseService(DirFileRepository dirFileRepository, FileDirectoryRepository fileDirectoryRepository,
+                             AlistEngineService engineService) {
         this.dirFileRepository = dirFileRepository;
         this.fileDirectoryRepository = fileDirectoryRepository;
+        this.engineService = engineService;
     }
 
     /**
-     * 浏览目录（从数据库读取）
+     * 浏览目录（优先数据库；refresh 或库中无数据时直连 Alist）
      */
     public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage, String sortMode) {
         path = normalizePath(path);
         page = Math.max(page, 1);
         perPage = Math.max(perPage, 1);
-        log.debug("查询目录: engineId={}, path={}, page={}, perPage={}, sort={}", engineId, path, page, perPage, sortMode);
+        log.debug("查询目录: engineId={}, path={}, refresh={}, page={}, perPage={}, sort={}", engineId, path, refresh, page, perPage, sortMode);
 
-        Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, path);
-        if (directoryOpt.isEmpty()) {
-            return List.of();
+        if (!refresh) {
+            Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, path);
+            if (directoryOpt.isPresent()) {
+                FileDirectory directory = directoryOpt.get();
+                List<FileItem> items = new ArrayList<>();
+                items.addAll(fileDirectoryRepository.findByEngineIdAndParentId(engineId, directory.getId()).stream()
+                        .map(dir -> toFileItem(dir, engineId))
+                        .toList());
+                items.addAll(dirFileRepository.findByDirectoryId(directory.getId()).stream()
+                        .map(df -> toFileItem(df, engineId))
+                        .toList());
+                return paginate(sortItems(items, sortMode), page, perPage);
+            }
         }
 
-        FileDirectory directory = directoryOpt.get();
-        List<FileItem> items = new ArrayList<>();
-        items.addAll(fileDirectoryRepository.findByEngineIdAndParentId(engineId, directory.getId()).stream()
-                .map(dir -> toFileItem(dir, engineId))
-                .toList());
-        items.addAll(dirFileRepository.findByDirectoryId(directory.getId()).stream()
-                .map(df -> toFileItem(df, engineId))
-                .toList());
+        return paginate(sortItems(listFromAlist(engineId, path, refresh), sortMode), page, perPage);
+    }
 
-        items.sort(buildComparator(sortMode));
+    private List<FileItem> listFromAlist(Long engineId, String path, boolean refresh) {
+        try {
+            AlistClient client = engineService.getClient(engineId);
+            List<FileItem> items = client.listFiles(path, refresh, 1, 1000);
+            for (FileItem item : items) {
+                if (item.getIsDir() == null || !item.getIsDir()) {
+                    if (isVideoFile(item.getName())) {
+                        item.setUrl("/api/files/stream/" + engineId + "/" + encodePath(item.getPath()));
+                    } else if (isImageFile(item.getName())) {
+                        item.setUrl("/api/files/proxy/" + engineId + "/" + encodePath(item.getPath()));
+                    }
+                }
+            }
+            return items;
+        } catch (Exception e) {
+            log.error("直连 Alist 获取目录失败: engineId={}, path={}", engineId, path, e);
+            return List.of();
+        }
+    }
+
+    private List<FileItem> sortItems(List<FileItem> items, String sortMode) {
+        List<FileItem> sorted = new ArrayList<>(items);
+        sorted.sort(buildComparator(sortMode));
+        return sorted;
+    }
+
+    private List<FileItem> paginate(List<FileItem> items, int page, int perPage) {
         int fromIndex = Math.max(0, (page - 1) * perPage);
         if (fromIndex >= items.size()) {
             return List.of();
