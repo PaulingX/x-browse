@@ -18,11 +18,13 @@ import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,9 +41,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class FileController {
 
-    /** 缓存预览图浏览器缓存时长（秒） */
-    private static final int CACHE_MAX_AGE_SECONDS = 86400;
-
     /** HTTP 206 Partial Content */
     private static final int PARTIAL_CONTENT = 206;
 
@@ -49,6 +48,10 @@ public class FileController {
     private final DirFileSyncService dirFileSyncService;
     private final AlistEngineService engineService;
     private final ThumbnailCacheService thumbnailCacheService;
+
+    /** 浏览器缓存图片秒数（proxy / thumbnail） */
+    @Value("${xbrowse.image-cache-seconds:86400}")
+    private int imageCacheSeconds;
 
     /**
      * 批量获取目录预览图 URL
@@ -91,7 +94,7 @@ public class FileController {
             }
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(MediaTypes.contentType(cacheFileName)))
-                    .header(HttpHeaders.CACHE_CONTROL, "max-age=" + CACHE_MAX_AGE_SECONDS)
+                    .header(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds)
                     .body(resource);
         } catch (Exception e) {
             log.error("读取缓存预览图失败: engineId={}, cacheFileName={}", engineId, cacheFileName, e);
@@ -139,21 +142,73 @@ public class FileController {
     /**
      * 代理获取文件（用于跨域或需要认证的图片等）
      * <p>
-     * 路径中可包含中文，由 PathUtils 按 UTF-8 解码。
+     * 优先读本地 proxy 缓存；未命中则拉取上游并可写回磁盘。
+     * 响应带 Cache-Control，便于浏览器二次访问。
      */
     @GetMapping("/proxy/{engineId}/**")
     public ResponseEntity<Resource> proxyFile(@PathVariable Long engineId, HttpServletRequest request) {
         try {
             String fullPath = PathUtils.extractFilePath(engineId, request.getRequestURI(), "proxy");
+            String contentType = MediaTypes.contentType(fullPath);
+
+            // 命中本地 proxy 缓存
+            Path cached = thumbnailCacheService.getCachedProxyPath(engineId, fullPath);
+            if (cached != null) {
+                Resource resource = new UrlResource(cached.toUri());
+                if (resource.exists()) {
+                    return ResponseEntity.ok()
+                            .contentType(MediaType.parseMediaType(contentType))
+                            .header(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds)
+                            .body(resource);
+                }
+            }
+
             String fileUrl = resolveFileUrl(engineId, fullPath);
             if (fileUrl == null) {
                 return ResponseEntity.notFound().build();
             }
-            return openUpstream(fileUrl, MediaTypes.contentType(fullPath), null, null);
+
+            // 图片可落盘缓存；非图片仍直连上游
+            if (MediaTypes.isImage(fullPath) && thumbnailCacheService.isProxyCacheEnabled()) {
+                return proxyAndCache(engineId, fullPath, fileUrl, contentType);
+            }
+            return openUpstream(fileUrl, contentType, null,
+                    Map.of(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds));
         } catch (Exception e) {
             log.error("代理文件失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
         }
+    }
+
+    /**
+     * 拉取上游图片，写入本地 proxy 缓存后返回（二次访问走磁盘）
+     */
+    private ResponseEntity<Resource> proxyAndCache(Long engineId, String fullPath, String fileUrl,
+                                                   String contentType) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(MediaTypes.connectTimeoutMs());
+        connection.setReadTimeout(MediaTypes.readTimeoutMs());
+        int status = connection.getResponseCode();
+        if (status >= 400) {
+            connection.disconnect();
+            return ResponseEntity.status(status).build();
+        }
+        try (InputStream in = connection.getInputStream()) {
+            Path cached = thumbnailCacheService.cacheProxyFile(engineId, fullPath, in);
+            if (cached != null && Files.exists(cached)) {
+                Resource resource = new UrlResource(cached.toUri());
+                return ResponseEntity.ok()
+                        .contentType(MediaType.parseMediaType(contentType))
+                        .header(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds)
+                        .body(resource);
+            }
+        } finally {
+            connection.disconnect();
+        }
+        // 缓存失败则再直连上游
+        return openUpstream(fileUrl, contentType, null,
+                Map.of(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds));
     }
 
     /**

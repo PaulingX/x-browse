@@ -22,7 +22,7 @@
 
     <div v-if="loading" class="viewer-loading">加载中...</div>
 
-    <!-- 图片查看器 -->
+    <!-- 图片查看器：先显示缩略图，再换原图 -->
     <template v-else-if="isImage">
       <!-- 连续滚动模式 -->
       <div
@@ -37,11 +37,13 @@
           class="image-item"
         >
           <img
-            :src="file.url"
+            :src="imageDisplaySrc(file, index)"
             :alt="file.name"
             class="scroll-image"
             @error="onImageError"
+            @load="onFullImageLoad(file, index)"
             loading="lazy"
+            decoding="async"
           />
         </div>
       </div>
@@ -50,10 +52,12 @@
       <div v-else class="image-swipe-view">
         <div class="swipe-image-container">
           <img
-            :src="currentFile?.url"
+            :src="imageDisplaySrc(currentFile, currentIndex)"
             :alt="currentFile?.name"
             class="swipe-image"
             @error="onImageError"
+            @load="onFullImageLoad(currentFile, currentIndex)"
+            decoding="async"
           />
         </div>
         <div
@@ -138,6 +142,8 @@ const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 const viewMode = ref('scroll')
 const videoError = ref('')
 const videoRetryKey = ref(0)
+/** 已加载原图的 path 集合，用于缩略图→原图渐进显示 */
+const fullImageReady = ref(new Set())
 
 const currentFile = computed(() => files.value[currentIndex.value])
 
@@ -323,6 +329,40 @@ function goBack() {
   router.back()
 }
 
+/** 渐进加载：未就绪用缩略图，就绪用原图 */
+function imageDisplaySrc(file, index) {
+  if (!file) return ''
+  const key = file.path || file.name || String(index)
+  if (fullImageReady.value.has(key) && file.url) {
+    return file.url
+  }
+  // 优先缩略图，无则原图
+  return file.thumbnailUrl || file.url || ''
+}
+
+function onFullImageLoad(file, index) {
+  if (!file) return
+  const key = file.path || file.name || String(index)
+  if (fullImageReady.value.has(key)) return
+  // 有独立缩略图时后台预取原图，就绪后切换
+  if (file.url && file.thumbnailUrl && file.url !== file.thumbnailUrl) {
+    const img = new Image()
+    img.decoding = 'async'
+    img.onload = () => {
+      const next = new Set(fullImageReady.value)
+      next.add(key)
+      fullImageReady.value = next
+    }
+    img.src = file.url
+    return
+  }
+  if (file.url) {
+    const next = new Set(fullImageReady.value)
+    next.add(key)
+    fullImageReady.value = next
+  }
+}
+
 function onImageError(e) {
   if (!e.target.src.includes('placeholder')) {
     e.target.src = '/placeholder.svg'
@@ -406,12 +446,16 @@ function handleKeydown(e) {
   }
 }
 
-// 切换媒体时暂停旧视频
+// 切换媒体时暂停旧视频，并预取当前图原图
 watch(currentIndex, (idx, prev) => {
   if (prev !== idx) {
     pauseVideo()
     videoError.value = ''
     showToolbar.value = true
+  }
+  const file = files.value[idx]
+  if (file && isImageExt(file.ext)) {
+    onFullImageLoad(file, idx)
   }
 })
 

@@ -211,6 +211,8 @@ public class DirFileSyncService {
         log.info("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
 
         Long directoryId = persistDirListing(engineId, path, parentId, items);
+        // 为图片文件生成列表缩略图并写回 dir_file.thumbnail_url
+        cacheFileThumbnails(engineId, directoryId, items, client);
         String dirThumbnail = resolveDirThumbnail(engineId, path, items, client);
         dirThumbnail = syncChildrenAndInheritThumb(engineId, directoryId, items, client, dirThumbnail);
 
@@ -271,22 +273,52 @@ public class DirFileSyncService {
         });
     }
 
-    private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
-        String firstImagePath = null;
+    /**
+     * 同步当前目录下图片文件的列表缩略图，写入 dir_file.thumbnail_url
+     */
+    private void cacheFileThumbnails(Long engineId, Long directoryId, List<FileItem> items, AlistClient client) {
+        if (directoryId == null || items == null || items.isEmpty()) {
+            return;
+        }
         for (FileItem item : items) {
-            if (!Boolean.TRUE.equals(item.getIsDir()) && MediaTypes.isImage(item.getName())) {
-                firstImagePath = item.getPath();
-                break;
+            if (Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
+                continue;
+            }
+            try {
+                String thumbUrl = thumbnailCacheService.cacheThumbnail(engineId, item.getPath(), client);
+                if (thumbUrl == null) {
+                    continue;
+                }
+                item.setThumbnailUrl(thumbUrl);
+                txTemplate.executeWithoutResult(status -> {
+                    DirFile df = dirFileRepository.findByDirectoryIdAndName(directoryId, item.getName());
+                    if (df != null) {
+                        df.setThumbnailUrl(thumbUrl);
+                        dirFileRepository.save(df);
+                    }
+                });
+            } catch (Exception e) {
+                log.warn("图片缩略图同步失败: engineId={}, path={}, err={}", engineId, item.getPath(), e.getMessage());
             }
         }
-        if (firstImagePath == null) {
-            return null;
+    }
+
+    private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
+        // 优先复用已生成的文件缩略图
+        for (FileItem item : items) {
+            if (Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
+                continue;
+            }
+            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
+                return item.getThumbnailUrl();
+            }
+            String cachedUrl = thumbnailCacheService.cacheThumbnail(engineId, item.getPath(), client);
+            if (cachedUrl != null) {
+                return cachedUrl;
+            }
+            return MediaTypes.proxyUrl(engineId, item.getPath());
         }
-        String cachedUrl = thumbnailCacheService.cacheThumbnail(engineId, firstImagePath, client);
-        if (cachedUrl != null) {
-            return cachedUrl;
-        }
-        return MediaTypes.proxyUrl(engineId, firstImagePath);
+        return null;
     }
 
     private String syncChildrenAndInheritThumb(Long engineId, Long directoryId, List<FileItem> items,

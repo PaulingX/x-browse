@@ -2,12 +2,13 @@ package com.xbrowse.service;
 
 import com.xbrowse.util.AlistClient;
 import com.xbrowse.util.MediaTypes;
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -19,93 +20,82 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 
 /**
- * 目录预览图本地缓存服务
+ * 图片本地缓存服务
  * <p>
- * 功能说明：
- * 1. 同步时将目录的第一个图片文件下载到本地缓存目录
- * 2. 浏览目录时直接从本地缓存读取预览图，避免每次都代理请求 Alist
- * 3. 缓存目录结构：{cacheDir}/thumbnails/{engineId}/{pathHash}.jpg
+ * 1. 同步时生成列表缩略图（小 JPEG）
+ * 2. 可选缓存 proxy 原图，减轻重复代理
+ * 3. 目录结构：
+ *    {cacheDir}/thumbnails/{engineId}/{pathHash}.jpg
+ *    {cacheDir}/proxy/{engineId}/{pathHash}.{ext}
  */
 @Slf4j
 @Service
 public class ThumbnailCacheService {
 
-    /** 缓存根目录下的缩略图子目录名 */
     private static final String THUMBNAILS_DIR = "thumbnails";
-
-    /** 缩略图最大边长（像素） */
-    private static final int MAX_THUMB_WIDTH = 200;
-
-    /** JPEG 输出质量 */
-    private static final double JPEG_QUALITY = 0.7;
-
-    /** 下载读超时 */
+    private static final String PROXY_DIR = "proxy";
+    private static final double JPEG_QUALITY = 0.72;
     private static final int DOWNLOAD_READ_TIMEOUT_MS = 60_000;
 
     @Value("${xbrowse.cache-dir:./data/cache}")
     private String cacheDir;
 
-    /**
-     * 初始化缓存目录
-     */
+    @Value("${xbrowse.thumbnail-enabled:true}")
+    private boolean thumbnailEnabled;
+
+    @Value("${xbrowse.thumbnail-max-width:200}")
+    private int maxThumbWidth;
+
+    @Getter
+    @Value("${xbrowse.proxy-cache-enabled:true}")
+    private boolean proxyCacheEnabled;
+
     @PostConstruct
     public void init() {
         try {
-            Path thumbDir = Paths.get(cacheDir, THUMBNAILS_DIR);
-            Files.createDirectories(thumbDir);
-            log.info("缩略图缓存目录初始化完成: {}", thumbDir.toAbsolutePath());
+            Files.createDirectories(Paths.get(cacheDir, THUMBNAILS_DIR));
+            Files.createDirectories(Paths.get(cacheDir, PROXY_DIR));
+            log.info("图片缓存目录初始化完成: {}", Paths.get(cacheDir).toAbsolutePath());
         } catch (IOException e) {
-            log.error("创建缩览图缓存目录失败: {}", cacheDir, e);
+            log.error("创建图片缓存目录失败: {}", cacheDir, e);
         }
     }
 
     /**
-     * 缓存目录预览图到本地磁盘
+     * 缓存列表缩略图（最大边 maxThumbWidth）
      *
-     * @param engineId  引擎 ID
-     * @param imagePath 图片文件的完整路径（如 /相册/封面.jpg）
-     * @param client    Alist 客户端（复用连接）
-     * @return 本地缓存 URL（如 /api/files/thumbnail/1/xxx.jpg），失败返回 null
+     * @return 本地缓存 URL，失败返回 null
      */
     public String cacheThumbnail(Long engineId, String imagePath, AlistClient client) {
-        log.info("缓存目录预览图: engineId={}, imagePath={}", engineId, imagePath);
-        // 使用路径哈希避免文件名冲突和路径过长
+        if (!thumbnailEnabled || engineId == null || imagePath == null) {
+            return null;
+        }
         String cacheFileName = md5(imagePath) + ".jpg";
         Path cachePath = Paths.get(cacheDir, THUMBNAILS_DIR, String.valueOf(engineId), cacheFileName);
-
-        // 已缓存则直接返回
         if (Files.exists(cachePath)) {
             return buildThumbnailUrl(engineId, cacheFileName);
         }
-
         try {
             String fileUrl = client.getFileUrl(imagePath);
             if (fileUrl == null) {
-                log.warn("获取预览图下载地址失败: engineId={}, imagePath={}", engineId, imagePath);
                 return null;
             }
             Files.createDirectories(cachePath.getParent());
-            downloadToFile(fileUrl, cachePath);
-            log.info("预览图缓存成功: engineId={}, imagePath={}, cachePath={}", engineId, imagePath, cachePath);
+            downloadAndResize(fileUrl, cachePath, maxThumbWidth);
             return buildThumbnailUrl(engineId, cacheFileName);
         } catch (Exception e) {
-            log.error("缓存预览图失败: engineId={}, imagePath={}", engineId, imagePath, e);
-            // 清理可能的不完整文件
+            log.warn("缓存缩略图失败: engineId={}, path={}, err={}", engineId, imagePath, e.getMessage());
             try {
                 Files.deleteIfExists(cachePath);
             } catch (IOException ignored) {
-                // 忽略清理失败
+                // ignore
             }
             return null;
         }
     }
 
     /**
-     * 获取本地缓存文件的完整路径
-     *
-     * @param engineId  引擎 ID
-     * @param cacheName 缓存文件名（含扩展名）
-     * @return 本地文件 Path，不存在返回 null
+     * 获取本地缩略图路径
      */
     public Path getCachedThumbnailPath(Long engineId, String cacheName) {
         Path path = Paths.get(cacheDir, THUMBNAILS_DIR, String.valueOf(engineId), cacheName);
@@ -113,8 +103,51 @@ public class ThumbnailCacheService {
     }
 
     /**
-     * 构建缩略图访问 URL
+     * 获取 proxy 原图本地缓存（若存在）
      */
+    public Path getCachedProxyPath(Long engineId, String filePath) {
+        if (!proxyCacheEnabled || engineId == null || filePath == null) {
+            return null;
+        }
+        Path path = proxyCacheFile(engineId, filePath);
+        return Files.exists(path) ? path : null;
+    }
+
+    /**
+     * 将上游流写入 proxy 本地缓存，并返回缓存路径；失败返回 null
+     */
+    public Path cacheProxyFile(Long engineId, String filePath, InputStream in) {
+        if (!proxyCacheEnabled || engineId == null || filePath == null || in == null) {
+            return null;
+        }
+        Path target = proxyCacheFile(engineId, filePath);
+        try {
+            Files.createDirectories(target.getParent());
+            Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
+            Files.copy(in, tmp, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            return target;
+        } catch (Exception e) {
+            log.warn("缓存 proxy 文件失败: engineId={}, path={}, err={}", engineId, filePath, e.getMessage());
+            try {
+                Files.deleteIfExists(target);
+                Files.deleteIfExists(target.resolveSibling(target.getFileName() + ".tmp"));
+            } catch (IOException ignored) {
+                // ignore
+            }
+            return null;
+        }
+    }
+
+    private Path proxyCacheFile(Long engineId, String filePath) {
+        String ext = MediaTypes.extensionOf(filePath);
+        if (ext == null || ext.isEmpty()) {
+            ext = "bin";
+        }
+        return Paths.get(cacheDir, PROXY_DIR, String.valueOf(engineId), md5(filePath) + "." + ext);
+    }
+
     private String buildThumbnailUrl(Long engineId, String cacheFileName) {
         return "/api/files/thumbnail/" + engineId + "/" + cacheFileName;
     }
@@ -124,7 +157,7 @@ public class ThumbnailCacheService {
      * <p>
      * 等比缩放最大边 200px，输出 JPEG；无法解码时按原文件保存。
      */
-    private void downloadToFile(String fileUrl, Path targetPath) throws IOException {
+    private void downloadAndResize(String fileUrl, Path targetPath, int maxWidth) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
         connection.setRequestMethod("GET");
         connection.setConnectTimeout(MediaTypes.connectTimeoutMs());
@@ -133,13 +166,13 @@ public class ThumbnailCacheService {
             byte[] data = in.readAllBytes();
             try {
                 Thumbnails.of(new java.io.ByteArrayInputStream(data))
-                        .size(MAX_THUMB_WIDTH, MAX_THUMB_WIDTH)
+                        .size(maxWidth, maxWidth)
                         .keepAspectRatio(true)
                         .outputFormat("jpg")
                         .outputQuality(JPEG_QUALITY)
                         .toFile(targetPath.toFile());
             } catch (Exception e) {
-                log.warn("无法解码图片，按原文件保存: {}", fileUrl);
+                // 无法解码时保存原文件（可能不是标准位图）
                 Files.write(targetPath, data);
             }
         } finally {

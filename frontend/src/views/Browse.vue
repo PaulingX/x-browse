@@ -65,19 +65,22 @@
               color="#1989fa"
             />
             <img
-              v-else-if="item.url && isImage(item.ext)"
-              :src="getCachedImage(item.url)?.src || item.url"
+              v-else-if="isImage(item.ext) && listThumbSrc(item)"
+              :src="getCachedImage(listThumbSrc(item))?.src || listThumbSrc(item)"
               :alt="item.name"
               class="file-thumbnail"
-              @load="onThumbLoad($event, item.url)"
+              loading="lazy"
+              decoding="async"
+              @load="onThumbLoad($event, listThumbSrc(item))"
               @error="handleImgError"
             />
-            <div v-else-if="isVideo(item.ext) && item.thumbnailUrl" class="video-thumb-wrap">
+            <div v-else-if="isVideo(item.ext) && listThumbSrc(item)" class="video-thumb-wrap">
               <img
-                :src="item.thumbnailUrl"
+                :src="listThumbSrc(item)"
                 :alt="item.name"
                 class="file-thumbnail"
                 loading="lazy"
+                decoding="async"
                 @error="handleImgError"
               />
               <van-icon name="play-circle-o" class="video-play-badge" />
@@ -109,7 +112,12 @@
         class="waterfall-item"
         @click="openViewer(item)"
       >
-        <img :src="item.url" :alt="item.name" loading="lazy" />
+        <img
+          :src="listThumbSrc(item)"
+          :alt="item.name"
+          loading="lazy"
+          decoding="async"
+        />
       </div>
     </div>
 
@@ -400,14 +408,25 @@ function onThumbLoad(e, url) {
 const imageCache = new Map()
 const MAX_CACHE_MEMORY = 100 * 1024 * 1024
 const CACHE_TTL = 30 * 60 * 1000
+/** 列表预加载并发上限，避免弱网挤爆 */
+const PRELOAD_CONCURRENCY = 4
+const PRELOAD_BATCH = 6
 let cacheMemoryUsage = 0
 let cacheTimer = null
+let preloadActive = 0
+const preloadQueue = []
+
+/** 列表展示用缩略图：优先 thumbnailUrl，回退 url */
+function listThumbSrc(item) {
+  if (!item) return ''
+  return item.thumbnailUrl || item.url || ''
+}
 
 function estimateImageMemory(img) {
   if (img.naturalWidth && img.naturalHeight) {
     return img.naturalWidth * img.naturalHeight * 4
   }
-  return 500 * 1024
+  return 200 * 1024
 }
 
 function evictExpiredCache() {
@@ -453,7 +472,7 @@ function cacheImage(url) {
   if (!url || imageCache.has(url)) return
   evictExpiredCache()
   const img = new Image()
-  img.src = url
+  img.decoding = 'async'
   img.onload = () => {
     const memory = estimateImageMemory(img)
     if (cacheMemoryUsage + memory > MAX_CACHE_MEMORY) {
@@ -462,6 +481,22 @@ function cacheImage(url) {
     imageCache.set(url, { img, memory, timestamp: Date.now() })
     cacheMemoryUsage += memory
     evictOverBudgetCache()
+    preloadActive = Math.max(0, preloadActive - 1)
+    pumpPreloadQueue()
+  }
+  img.onerror = () => {
+    preloadActive = Math.max(0, preloadActive - 1)
+    pumpPreloadQueue()
+  }
+  img.src = url
+}
+
+function pumpPreloadQueue() {
+  while (preloadActive < PRELOAD_CONCURRENCY && preloadQueue.length > 0) {
+    const url = preloadQueue.shift()
+    if (!url || imageCache.has(url)) continue
+    preloadActive++
+    cacheImage(url)
   }
 }
 
@@ -471,6 +506,8 @@ function clearImageCache() {
   }
   imageCache.clear()
   cacheMemoryUsage = 0
+  preloadQueue.length = 0
+  preloadActive = 0
   if (cacheTimer) {
     clearInterval(cacheTimer)
     cacheTimer = null
@@ -480,15 +517,20 @@ function clearImageCache() {
 function preloadImages(urls) {
   if (!urls || urls.length === 0) return
   evictExpiredCache()
-  const toLoad = urls.filter(url => url && !imageCache.has(url)).slice(0, 8)
-  toLoad.forEach(url => cacheImage(url))
+  const toLoad = urls
+    .filter(url => url && !imageCache.has(url) && !preloadQueue.includes(url))
+    .slice(0, PRELOAD_BATCH)
+  preloadQueue.push(...toLoad)
+  pumpPreloadQueue()
   evictOverBudgetCache()
 }
 
 function preloadPageImages() {
+  // 只预加载列表缩略图，不预加载原图
   const urls = files.value
-    .filter(f => !f.isDir && f.url && isImage(f.ext))
-    .map(f => f.url)
+    .filter(f => !f.isDir && isImage(f.ext))
+    .map(f => listThumbSrc(f))
+    .filter(Boolean)
   preloadImages(urls)
 }
 
@@ -500,8 +542,9 @@ function preloadNextPage() {
   }).then(res => {
     if (res.code === 200) {
       const urls = res.data
-        .filter(f => !f.isDir && f.url && isImage(f.ext))
-        .map(f => f.url)
+        .filter(f => !f.isDir && isImage(f.ext))
+        .map(f => listThumbSrc(f))
+        .filter(Boolean)
       preloadImages(urls)
     }
   }).catch(() => {})

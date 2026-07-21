@@ -125,7 +125,11 @@ public class FileBrowseService {
             if (cover == null) {
                 continue;
             }
-            String thumb = cover.getUrl();
+            // 优先用封面图自身的列表缩略图，否则代理原图
+            String thumb = cover.getThumbnailUrl();
+            if (thumb == null || thumb.isEmpty()) {
+                thumb = cover.getUrl();
+            }
             if (thumb == null || thumb.isEmpty()) {
                 thumb = MediaTypes.proxyUrl(engineId, cover.getPath());
             }
@@ -207,8 +211,13 @@ public class FileBrowseService {
             AlistClient client = engineService.getClient(engineId);
             List<FileItem> items = client.listFiles(path, refresh, 1, 1000);
             for (FileItem item : items) {
-                if (!Boolean.TRUE.equals(item.getIsDir())) {
-                    item.setUrl(MediaTypes.mediaUrl(engineId, item.getPath(), item.getName()));
+                if (Boolean.TRUE.equals(item.getIsDir())) {
+                    continue;
+                }
+                item.setUrl(MediaTypes.mediaUrl(engineId, item.getPath(), item.getName()));
+                // 未同步时列表缩略图回退为原图代理（前端仍会懒加载）
+                if (MediaTypes.isImage(item.getName()) && (item.getThumbnailUrl() == null || item.getThumbnailUrl().isEmpty())) {
+                    item.setThumbnailUrl(item.getUrl());
                 }
             }
             return items;
@@ -252,7 +261,7 @@ public class FileBrowseService {
     }
 
     /**
-     * DirFile 转 FileItem，并为媒体文件生成 proxy/stream URL
+     * DirFile 转 FileItem：url=原图/视频流，thumbnailUrl=列表小图
      */
     private FileItem toFileItem(DirFile df, Long engineId) {
         FileItem fi = new FileItem();
@@ -265,8 +274,14 @@ public class FileBrowseService {
         fi.setModified(df.getModifiedTime());
         if (Boolean.TRUE.equals(df.getIsDir())) {
             fi.setUrl(df.getThumbnailUrl());
+            fi.setThumbnailUrl(df.getThumbnailUrl());
         } else {
             fi.setUrl(MediaTypes.mediaUrl(engineId, fullPath, df.getName()));
+            if (MediaTypes.isImage(df.getName())) {
+                // 已同步缩略图优先，否则回退原图代理
+                String thumb = df.getThumbnailUrl();
+                fi.setThumbnailUrl(thumb != null && !thumb.isEmpty() ? thumb : fi.getUrl());
+            }
         }
         return fi;
     }
@@ -282,6 +297,7 @@ public class FileBrowseService {
         fi.setPath(directory.getPath());
         fi.setModified(directory.getModifiedTime());
         fi.setUrl(directory.getThumbnailUrl());
+        fi.setThumbnailUrl(directory.getThumbnailUrl());
         return fi;
     }
 }
