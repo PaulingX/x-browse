@@ -1,5 +1,7 @@
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
-const VIDEO_EXTS = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm']
+const VIDEO_EXTS = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ogg', 'ogv']
+/** 浏览器 <video> 通常可直接播放的格式 */
+const BROWSER_PLAYABLE_VIDEO_EXTS = ['mp4', 'm4v', 'webm', 'ogg', 'ogv', 'mov']
 
 export function isImage(ext) {
   return IMAGE_EXTS.includes(ext?.toLowerCase())
@@ -7,6 +9,11 @@ export function isImage(ext) {
 
 export function isVideo(ext) {
   return VIDEO_EXTS.includes(ext?.toLowerCase())
+}
+
+/** 是否为浏览器原生较易播放的视频格式 */
+export function isBrowserPlayableVideo(ext) {
+  return BROWSER_PLAYABLE_VIDEO_EXTS.includes(ext?.toLowerCase())
 }
 
 export function formatSize(bytes) {

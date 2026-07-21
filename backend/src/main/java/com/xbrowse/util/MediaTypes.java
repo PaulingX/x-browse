@@ -21,6 +21,8 @@ public final class MediaTypes {
 
     private static final int CONNECT_TIMEOUT_MS = 30_000;
     private static final int READ_TIMEOUT_MS = 30_000;
+    /** 视频流读取超时（长视频/拖动进度需要更长空闲容忍） */
+    private static final int STREAM_READ_TIMEOUT_MS = 120_000;
     private static final int HEAD_TIMEOUT_MS = 10_000;
 
     private MediaTypes() {
@@ -34,6 +36,11 @@ public final class MediaTypes {
     /** HTTP 读取超时（毫秒） */
     public static int readTimeoutMs() {
         return READ_TIMEOUT_MS;
+    }
+
+    /** 视频流读取超时（毫秒） */
+    public static int streamReadTimeoutMs() {
+        return STREAM_READ_TIMEOUT_MS;
     }
 
     /** HEAD 请求超时（毫秒） */
@@ -112,9 +119,14 @@ public final class MediaTypes {
             case "gif" -> "image/gif";
             case "webp" -> "image/webp";
             case "svg" -> "image/svg+xml";
-            case "mp4" -> "video/mp4";
+            case "mp4", "m4v" -> "video/mp4";
             case "webm" -> "video/webm";
-            case "ogg" -> "video/ogg";
+            case "ogg", "ogv" -> "video/ogg";
+            case "mov" -> "video/quicktime";
+            case "mkv" -> "video/x-matroska";
+            case "avi" -> "video/x-msvideo";
+            case "wmv" -> "video/x-ms-wmv";
+            case "flv" -> "video/x-flv";
             default -> "application/octet-stream";
         };
     }

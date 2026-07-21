@@ -265,22 +265,19 @@ function handleClick(item) {
     router.push({ query: { path: item.path } })
     loadFiles()
     window.scrollTo(0, 0)
-  } else if (isImage(item.ext)) {
-    const index = imageFiles.value.findIndex((f) => f.name === item.name)
-    openViewer(index >= 0 ? index : 0)
-  } else if (isVideo(item.ext)) {
-    const index = files.value.findIndex((f) => f.name === item.name)
-    openViewer(index >= 0 ? index : 0)
+  } else if (isImage(item.ext) || isVideo(item.ext)) {
+    // 与 Viewer 使用同一套媒体列表（图+视频），用文件名定位，避免 index 错位
+    openViewer(item)
   }
 }
 
-function openViewer(index) {
+function openViewer(item) {
   router.push({
     name: 'Viewer',
     params: { engineId: engineId.value },
     query: {
       path: currentPath.value,
-      index
+      file: item.name
     }
   })
 }

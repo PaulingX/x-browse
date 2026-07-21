@@ -157,7 +157,7 @@ public class FileController {
     }
 
     /**
-     * 获取流媒体（用于视频播放，支持 Range 请求）
+     * 获取流媒体（用于视频播放，支持 Range 请求与拖动进度）
      */
     @GetMapping("/stream/{engineId}/**")
     public ResponseEntity<Resource> streamFile(
@@ -171,36 +171,91 @@ public class FileController {
                 return ResponseEntity.notFound().build();
             }
             String contentType = MediaTypes.contentType(fullPath);
+
             // 无 Range：整文件返回，并声明支持字节范围
-            if (range == null) {
-                return openUpstream(fileUrl, contentType, null, Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"));
+            if (range == null || range.isBlank()) {
+                return openUpstream(fileUrl, contentType, null,
+                        Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"), 200, true);
             }
 
             long fileSize = headContentLength(fileUrl);
-            // 无法获取大小时回退为整文件
+            // 无法获取大小时透传 Range，由上游处理
             if (fileSize <= 0) {
-                return openUpstream(fileUrl, contentType, null, Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"));
+                return openUpstream(fileUrl, contentType, range,
+                        Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"), 206, true);
             }
 
-            // 解析 Range: bytes=start-end
-            long start = 0;
-            long end = fileSize - 1;
-            String[] parts = range.replace("bytes=", "").split("-");
-            start = Long.parseLong(parts[0]);
-            if (parts.length > 1 && !parts[1].isEmpty()) {
-                end = Long.parseLong(parts[1]);
+            long[] bounds = parseByteRange(range, fileSize);
+            if (bounds == null) {
+                return ResponseEntity.status(416)
+                        .header(HttpHeaders.CONTENT_RANGE, "bytes */" + fileSize)
+                        .build();
             }
+            long start = bounds[0];
+            long end = bounds[1];
             long contentLength = end - start + 1;
             Map<String, String> headers = Map.of(
                     HttpHeaders.ACCEPT_RANGES, "bytes",
                     HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + fileSize,
                     HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength)
             );
-            return openUpstream(fileUrl, contentType, "bytes=" + start + "-" + end, headers, PARTIAL_CONTENT);
+            return openUpstream(fileUrl, contentType, "bytes=" + start + "-" + end, headers, PARTIAL_CONTENT, true);
         } catch (Exception e) {
             log.error("流媒体播放失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
         }
+    }
+
+    /**
+     * 解析 Range 请求头，支持 bytes=start-end / bytes=start- / bytes=-suffix
+     *
+     * @return [start, end]，非法时返回 null
+     */
+    private long[] parseByteRange(String range, long fileSize) {
+        if (fileSize <= 0) {
+            return null;
+        }
+        String value = range.trim();
+        if (!value.regionMatches(true, 0, "bytes=", 0, 6)) {
+            return null;
+        }
+        // 不支持多段 Range
+        value = value.substring(6).trim();
+        if (value.contains(",")) {
+            return null;
+        }
+        int dash = value.indexOf('-');
+        if (dash < 0) {
+            return null;
+        }
+        String startPart = value.substring(0, dash).trim();
+        String endPart = value.substring(dash + 1).trim();
+        long start;
+        long end;
+        try {
+            if (startPart.isEmpty()) {
+                // bytes=-N：最后 N 字节
+                long suffix = Long.parseLong(endPart);
+                if (suffix <= 0) {
+                    return null;
+                }
+                start = Math.max(0, fileSize - suffix);
+                end = fileSize - 1;
+            } else {
+                start = Long.parseLong(startPart);
+                end = endPart.isEmpty() ? fileSize - 1 : Long.parseLong(endPart);
+            }
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        if (start < 0 || start >= fileSize) {
+            return null;
+        }
+        end = Math.min(end, fileSize - 1);
+        if (end < start) {
+            return null;
+        }
+        return new long[]{start, end};
     }
 
     /**
@@ -212,11 +267,11 @@ public class FileController {
     }
 
     /**
-     * 打开上游 HTTP 资源并包装为响应（默认 200）
+     * 打开上游 HTTP 资源并包装为响应（默认 200，普通代理超时）
      */
     private ResponseEntity<Resource> openUpstream(String fileUrl, String contentType,
                                                    String rangeHeader, Map<String, String> extraHeaders) throws Exception {
-        return openUpstream(fileUrl, contentType, rangeHeader, extraHeaders, 200);
+        return openUpstream(fileUrl, contentType, rangeHeader, extraHeaders, 200, false);
     }
 
     /**
@@ -224,22 +279,38 @@ public class FileController {
      *
      * @param rangeHeader 可选 Range 请求头
      * @param status      HTTP 状态码（200 或 206）
+     * @param streaming   是否视频流（使用更长读超时）
      */
     private ResponseEntity<Resource> openUpstream(String fileUrl, String contentType,
                                                    String rangeHeader, Map<String, String> extraHeaders,
-                                                   int status) throws Exception {
+                                                   int status, boolean streaming) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
         connection.setRequestMethod("GET");
         connection.setConnectTimeout(MediaTypes.connectTimeoutMs());
-        connection.setReadTimeout(MediaTypes.readTimeoutMs());
+        connection.setReadTimeout(streaming ? MediaTypes.streamReadTimeoutMs() : MediaTypes.readTimeoutMs());
         if (rangeHeader != null) {
             connection.setRequestProperty("Range", rangeHeader);
         }
+        int upstreamStatus = connection.getResponseCode();
+        if (upstreamStatus >= 400) {
+            connection.disconnect();
+            return ResponseEntity.status(upstreamStatus).build();
+        }
         InputStream inputStream = connection.getInputStream();
-        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status)
+        // 有 Range 时优先使用上游真实状态（200/206）
+        int responseStatus = rangeHeader != null
+                ? (upstreamStatus == PARTIAL_CONTENT ? PARTIAL_CONTENT : upstreamStatus)
+                : status;
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(responseStatus)
                 .contentType(MediaType.parseMediaType(contentType));
         if (extraHeaders != null) {
             extraHeaders.forEach(builder::header);
+        }
+        // 上游带 Content-Range 时尽量透传，保证拖动进度正确
+        String upstreamRange = connection.getHeaderField(HttpHeaders.CONTENT_RANGE);
+        if (upstreamRange != null && !upstreamRange.isEmpty()
+                && (extraHeaders == null || !extraHeaders.containsKey(HttpHeaders.CONTENT_RANGE))) {
+            builder.header(HttpHeaders.CONTENT_RANGE, upstreamRange);
         }
         return builder.body(new InputStreamResource(inputStream));
     }
@@ -254,6 +325,13 @@ public class FileController {
             connection.setConnectTimeout(MediaTypes.headTimeoutMs());
             connection.setReadTimeout(MediaTypes.headTimeoutMs());
             long size = connection.getContentLengthLong();
+            // 部分存储不支持 HEAD，回退 Content-Length 为 -1
+            if (size <= 0) {
+                String cl = connection.getHeaderField("Content-Length");
+                if (cl != null && !cl.isEmpty()) {
+                    size = Long.parseLong(cl);
+                }
+            }
             connection.disconnect();
             return size;
         } catch (Exception e) {
