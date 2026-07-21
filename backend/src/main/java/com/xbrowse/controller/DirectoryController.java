@@ -58,6 +58,15 @@ public class DirectoryController {
     }
 
     /**
+     * 立即同步指定浏览目录（仅管理员）
+     */
+    @PostMapping("/{id}/sync")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResponse<BrowseDirectoryDTO> syncDirectory(@PathVariable Long id) {
+        return ApiResponse.success("同步完成", directoryService.syncNow(id));
+    }
+
+    /**
      * 删除目录（仅管理员）
      */
     @DeleteMapping("/{id}")

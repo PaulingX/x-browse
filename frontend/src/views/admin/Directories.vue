@@ -21,18 +21,36 @@
             <span>{{ getEngineName(dir.engineId) }} - {{ dir.path }}</span>
             <div class="dir-tags">
               <van-tag v-if="dir.thumbnailEnabled" type="primary" size="small">缩略图</van-tag>
+              <van-tag :type="dir.syncMode === 'NONE' ? 'default' : 'success'" size="small">
+                {{ dir.syncDesc || getSyncDesc(dir) }}
+              </van-tag>
+            </div>
+            <div class="sync-time" v-if="dir.lastSyncTime || dir.nextSyncTime">
+              <span v-if="dir.lastSyncTime">上次：{{ formatTime(dir.lastSyncTime) }}</span>
+              <span v-if="dir.nextSyncTime">下次：{{ formatTime(dir.nextSyncTime) }}</span>
             </div>
           </div>
         </template>
         <template #right-icon>
-          <van-button
-            type="danger"
-            size="mini"
-            plain
-            @click.stop="deleteDir(dir)"
-          >
-            删除
-          </van-button>
+          <div class="dir-actions">
+            <van-button
+              type="primary"
+              size="mini"
+              plain
+              :loading="syncingId === dir.id"
+              @click.stop="syncNow(dir)"
+            >
+              同步
+            </van-button>
+            <van-button
+              type="danger"
+              size="mini"
+              plain
+              @click.stop="deleteDir(dir)"
+            >
+              删除
+            </van-button>
+          </div>
         </template>
       </van-cell>
     </van-cell-group>
@@ -75,6 +93,50 @@
                 <van-switch v-model="form.thumbnailEnabled" size="20" />
               </template>
             </van-field>
+            <div class="sync-card">
+              <div class="sync-card-title">同步策略</div>
+              <van-radio-group v-model="form.syncMode" direction="horizontal" class="sync-mode-group">
+                <van-radio name="INTERVAL">间隔</van-radio>
+                <van-radio name="CRON">Cron</van-radio>
+                <van-radio name="NONE">不同步</van-radio>
+              </van-radio-group>
+
+              <template v-if="form.syncMode === 'INTERVAL'">
+                <div class="interval-row">
+                  <van-field
+                    v-model.number="form.syncIntervalValue"
+                    label="每隔"
+                    type="digit"
+                    placeholder="数值"
+                    :rules="[{ validator: validateInterval, message: '请输入大于 0 的间隔' }]"
+                  />
+                  <van-field label="单位">
+                    <template #input>
+                      <div class="unit-tabs">
+                        <span
+                          v-for="unit in intervalUnits"
+                          :key="unit.value"
+                          class="unit-tab"
+                          :class="{ active: form.syncIntervalUnit === unit.value }"
+                          @click="form.syncIntervalUnit = unit.value"
+                        >{{ unit.label }}</span>
+                      </div>
+                    </template>
+                  </van-field>
+                </div>
+              </template>
+
+              <van-field
+                v-if="form.syncMode === 'CRON'"
+                v-model="form.syncCron"
+                label="Cron"
+                placeholder="如：0 0 */6 * * *"
+                :rules="[{ validator: validateCron, message: '请输入 6 位 Cron 表达式' }]"
+              />
+              <div class="sync-help">
+                {{ syncHelpText }}
+              </div>
+            </div>
           </van-cell-group>
           <div class="submit-btn">
             <van-button round block type="primary" native-type="submit" :loading="submitting">
@@ -150,7 +212,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/api'
 import { showToast, showConfirmDialog } from 'vant'
 
@@ -161,12 +223,24 @@ const showEnginePicker = ref(false)
 const showDirBrowser = ref(false)
 const editingDir = ref(null)
 const submitting = ref(false)
+const syncingId = ref(null)
+
+const intervalUnits = [
+  { label: '分钟', value: 'MINUTE' },
+  { label: '小时', value: 'HOUR' },
+  { label: '天', value: 'DAY' },
+  { label: '月', value: 'MONTH' }
+]
 
 const form = ref({
   engineId: null,
   path: '',
   name: '',
-  thumbnailEnabled: true
+  thumbnailEnabled: true,
+  syncMode: 'INTERVAL',
+  syncIntervalValue: 5,
+  syncIntervalUnit: 'MINUTE',
+  syncCron: ''
 })
 
 const engineOptions = computed(() => {
@@ -184,6 +258,26 @@ const dirItems = ref([])
 const pathParts = computed(() => {
   return currentPath.value.split('/').filter(Boolean)
 })
+
+const syncHelpText = computed(() => {
+  if (form.value.syncMode === 'NONE') return '该目录只在手动点击同步时更新。'
+  if (form.value.syncMode === 'CRON') return 'Cron 使用 6 位格式：秒 分 时 日 月 周，例如每 6 小时：0 0 */6 * * *'
+  const unit = intervalUnits.find(u => u.value === form.value.syncIntervalUnit)?.label || '分钟'
+  return `该目录将按独立任务每 ${form.value.syncIntervalValue || 0} ${unit}同步一次。`
+})
+
+function defaultForm() {
+  return {
+    engineId: engines.value.length === 1 ? engines.value[0].id : null,
+    path: '',
+    name: '',
+    thumbnailEnabled: true,
+    syncMode: 'INTERVAL',
+    syncIntervalValue: 5,
+    syncIntervalUnit: 'MINUTE',
+    syncCron: ''
+  }
+}
 
 function getEngineName(engineId) {
   const engine = engines.value.find((e) => e.id === engineId)
@@ -207,13 +301,30 @@ async function loadData() {
 // 打开添加弹窗：仅一个引擎时默认选中
 function openAdd() {
   editingDir.value = null
-  form.value = {
-    engineId: engines.value.length === 1 ? engines.value[0].id : null,
-    path: '',
-    name: '',
-    thumbnailEnabled: true
-  }
+  form.value = defaultForm()
   showAdd.value = true
+}
+
+function validateInterval(value) {
+  if (form.value.syncMode !== 'INTERVAL') return true
+  return Number(value) > 0
+}
+
+function validateCron(value) {
+  if (form.value.syncMode !== 'CRON') return true
+  return typeof value === 'string' && value.trim().split(/\s+/).length === 6
+}
+
+function formatTime(value) {
+  if (!value) return ''
+  return String(value).replace('T', ' ').slice(0, 16)
+}
+
+function getSyncDesc(dir) {
+  if (!dir || dir.syncMode === 'NONE') return '不同步'
+  if (dir.syncMode === 'CRON') return `Cron: ${dir.syncCron || '-'}`
+  const unitMap = { MINUTE: '分钟', HOUR: '小时', DAY: '天', MONTH: '月' }
+  return `每 ${dir.syncIntervalValue || 5} ${unitMap[dir.syncIntervalUnit] || '分钟'}`
 }
 
 // 选择引擎
@@ -292,9 +403,29 @@ function editDir(dir) {
     engineId: dir.engineId,
     path: dir.path,
     name: dir.name || '',
-    thumbnailEnabled: dir.thumbnailEnabled
+    thumbnailEnabled: dir.thumbnailEnabled,
+    syncMode: dir.syncMode || 'INTERVAL',
+    syncIntervalValue: dir.syncIntervalValue || 5,
+    syncIntervalUnit: dir.syncIntervalUnit || 'MINUTE',
+    syncCron: dir.syncCron || ''
   }
   showAdd.value = true
+}
+
+// 立即同步单个浏览目录
+async function syncNow(dir) {
+  syncingId.value = dir.id
+  try {
+    const res = await api.post(`/api/directories/${dir.id}/sync`)
+    if (res.code === 200) {
+      showToast('同步完成')
+      loadData()
+    }
+  } catch (error) {
+    showToast('同步失败')
+  } finally {
+    syncingId.value = null
+  }
 }
 
 // 删除目录
@@ -330,7 +461,7 @@ async function onSubmit() {
       showToast(editingDir.value ? '更新成功' : '添加成功')
       showAdd.value = false
       editingDir.value = null
-      form.value = { engineId: null, path: '', name: '', thumbnailEnabled: true }
+      form.value = defaultForm()
       loadData()
     }
   } catch (error) {
@@ -367,7 +498,22 @@ onMounted(() => {
 
 .dir-tags {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+
+.sync-time {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-color-3);
+}
+
+.dir-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 
 .popup-content {
@@ -386,6 +532,58 @@ onMounted(() => {
 .submit-btn {
   margin-top: 20px;
   padding: 0 16px;
+}
+
+.sync-card {
+  margin: 12px 0 4px;
+  padding: 14px 12px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(25, 137, 250, 0.08), rgba(7, 193, 96, 0.06));
+  border: 1px solid rgba(25, 137, 250, 0.12);
+}
+
+.sync-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-color);
+  margin-bottom: 12px;
+}
+
+.sync-mode-group {
+  margin-bottom: 10px;
+}
+
+.interval-row {
+  overflow: hidden;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.unit-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.unit-tab {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-color-2);
+  background: #f2f3f5;
+  cursor: pointer;
+}
+
+.unit-tab.active {
+  color: #fff;
+  background: var(--primary-color);
+}
+
+.sync-help {
+  margin-top: 10px;
+  color: var(--text-color-3);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* 目录浏览器样式 */

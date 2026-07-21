@@ -10,37 +10,34 @@ import com.xbrowse.repository.FileDirectoryRepository;
 import com.xbrowse.util.AlistClient;
 import com.xbrowse.util.MediaTypes;
 import com.xbrowse.util.PathUtils;
+import com.xbrowse.util.SyncScheduleUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 目录文件同步服务
  * <p>
- * 将 Alist 上配置的浏览目录（browse_directory）递归同步到本地
- * file_directory / dir_file，供浏览接口离线读取。
- * <p>
- * 注意：只同步已配置的浏览根路径，不扫描整个引擎根目录。
+ * 按每个浏览目录（browse_directory）独立调度同步：
+ * INTERVAL（分/时/天/月）或 CRON，不再整批同时同步所有目录。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DirFileSyncService {
 
-    /** 定时同步间隔：5 分钟 */
-    private static final long SYNC_FIXED_DELAY_MS = 300_000L;
-
-    /** 启动后首次同步延迟：30 秒 */
-    private static final long SYNC_INITIAL_DELAY_MS = 30_000L;
+    /** 调度轮询间隔：1 分钟检查一次是否有目录到期 */
+    private static final long SCHEDULER_TICK_MS = 60_000L;
+    private static final long SCHEDULER_INITIAL_DELAY_MS = 15_000L;
 
     private static final int ALIST_LIST_PAGE = 1;
     private static final int ALIST_LIST_PER_PAGE = 1000;
@@ -52,31 +49,38 @@ public class DirFileSyncService {
     private final TransactionTemplate txTemplate;
     private final ThumbnailCacheService thumbnailCacheService;
 
+    /** 防止同一浏览目录并发同步 */
+    private final ConcurrentHashMap<Long, Boolean> syncingIds = new ConcurrentHashMap<>();
+
     /**
-     * 定时同步所有已配置的浏览目录
+     * 调度轮询：逐个检查到期的浏览目录并同步
      */
-    @Scheduled(fixedDelay = SYNC_FIXED_DELAY_MS, initialDelay = SYNC_INITIAL_DELAY_MS)
+    @Scheduled(fixedDelay = SCHEDULER_TICK_MS, initialDelay = SCHEDULER_INITIAL_DELAY_MS)
     public void scheduledSync() {
-        log.info("开始定时同步目录文件");
-        long start = System.currentTimeMillis();
-        try {
-            List<BrowseDirectory> roots = browseDirectoryRepository.findAll();
-            if (roots.isEmpty()) {
-                log.info("无浏览目录配置，跳过同步");
-                return;
+        LocalDateTime now = LocalDateTime.now();
+        List<BrowseDirectory> roots = browseDirectoryRepository.findAll();
+        if (roots.isEmpty()) {
+            return;
+        }
+        int dueCount = 0;
+        for (BrowseDirectory root : roots) {
+            if (!SyncScheduleUtils.isDue(root, now)) {
+                continue;
             }
-            Map<Long, List<BrowseDirectory>> byEngine = groupByEngine(roots);
-            for (Map.Entry<Long, List<BrowseDirectory>> entry : byEngine.entrySet()) {
-                syncRoots(entry.getKey(), entry.getValue());
+            dueCount++;
+            try {
+                syncBrowseDirectory(root.getId(), false);
+            } catch (Exception e) {
+                log.error("定时同步浏览目录失败: id={}, path={}", root.getId(), root.getPath(), e);
             }
-            log.info("定时同步目录文件完成, 耗时: {}ms", System.currentTimeMillis() - start);
-        } catch (Exception e) {
-            log.error("定时同步目录文件失败, 耗时: {}ms", System.currentTimeMillis() - start, e);
+        }
+        if (dueCount > 0) {
+            log.info("本轮到期同步目录数: {}", dueCount);
         }
     }
 
     /**
-     * 同步指定引擎下已配置的浏览目录（不整库扫描引擎根路径）
+     * 同步指定引擎下所有浏览目录（手动，忽略计划）
      */
     public void syncEngine(Long engineId) {
         List<BrowseDirectory> roots = browseDirectoryRepository.findByEngineId(engineId);
@@ -84,49 +88,101 @@ public class DirFileSyncService {
             log.info("引擎无浏览目录，跳过同步: engineId={}", engineId);
             return;
         }
-        syncRoots(engineId, roots);
+        for (BrowseDirectory root : roots) {
+            syncBrowseDirectory(root.getId(), true);
+        }
     }
 
     /**
-     * 同步指定路径及其子目录（添加浏览目录后会调用）
+     * 按浏览目录 ID 同步（手动或定时）
+     *
+     * @param force true 忽略计划强制同步
+     */
+    public void syncBrowseDirectory(Long browseDirectoryId, boolean force) {
+        if (browseDirectoryId == null) {
+            return;
+        }
+        if (syncingIds.putIfAbsent(browseDirectoryId, Boolean.TRUE) != null) {
+            log.info("浏览目录正在同步中，跳过: id={}", browseDirectoryId);
+            return;
+        }
+        long start = System.currentTimeMillis();
+        try {
+            BrowseDirectory root = browseDirectoryRepository.findById(browseDirectoryId).orElse(null);
+            if (root == null) {
+                log.warn("浏览目录不存在: id={}", browseDirectoryId);
+                return;
+            }
+            if (!force && BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+                log.info("浏览目录未启用同步: id={}, path={}", root.getId(), root.getPath());
+                return;
+            }
+            if (!force && !SyncScheduleUtils.isDue(root, LocalDateTime.now())) {
+                log.debug("浏览目录未到期: id={}, next={}", root.getId(), root.getNextSyncTime());
+                return;
+            }
+
+            log.info("开始同步浏览目录: id={}, engineId={}, path={}, force={}",
+                    root.getId(), root.getEngineId(), root.getPath(), force);
+            String rootPath = PathUtils.normalize(root.getPath());
+            AlistClient client = engineService.getClient(root.getEngineId());
+            syncRecursive(root.getEngineId(), rootPath, resolveParentId(root.getEngineId(), rootPath), client);
+
+            LocalDateTime finished = LocalDateTime.now();
+            root.setLastSyncTime(finished);
+            if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+                root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, finished));
+            } else {
+                root.setNextSyncTime(null);
+            }
+            browseDirectoryRepository.save(root);
+            log.info("浏览目录同步完成: id={}, path={}, 耗时: {}ms, next={}",
+                    root.getId(), root.getPath(), System.currentTimeMillis() - start, root.getNextSyncTime());
+        } finally {
+            syncingIds.remove(browseDirectoryId);
+        }
+    }
+
+    /**
+     * 同步指定路径及其子目录（添加浏览目录后立即调用，不更新计划字段）
      */
     public void syncDirectory(Long engineId, String path) {
-        log.info("手动同步目录: engineId={}, path={}", engineId, path);
+        log.info("手动同步路径: engineId={}, path={}", engineId, path);
         long start = System.currentTimeMillis();
         String normalizedPath = PathUtils.normalize(path);
         AlistClient client = engineService.getClient(engineId);
         syncRecursive(engineId, normalizedPath, resolveParentId(engineId, normalizedPath), client);
-        log.info("手动同步完成: engineId={}, path={}, 耗时: {}ms", engineId, path, System.currentTimeMillis() - start);
+        log.info("路径同步完成: engineId={}, path={}, 耗时: {}ms", engineId, path, System.currentTimeMillis() - start);
     }
 
     /**
-     * 按引擎同步一组浏览根目录
+     * 添加/更新后：立即同步并写入 next_sync_time
      */
-    private void syncRoots(Long engineId, List<BrowseDirectory> roots) {
-        log.info("同步引擎浏览目录: engineId={}, roots={}", engineId, roots.size());
-        long start = System.currentTimeMillis();
-        AlistClient client = engineService.getClient(engineId);
-        for (BrowseDirectory root : roots) {
-            String rootPath = PathUtils.normalize(root.getPath());
-            syncRecursive(engineId, rootPath, resolveParentId(engineId, rootPath), client);
+    public void syncBrowseDirectoryAfterSave(Long browseDirectoryId) {
+        BrowseDirectory root = browseDirectoryRepository.findById(browseDirectoryId).orElse(null);
+        if (root == null) {
+            return;
         }
-        log.info("引擎浏览目录同步完成: engineId={}, 耗时: {}ms", engineId, System.currentTimeMillis() - start);
-    }
-
-    /**
-     * 按引擎 ID 分组浏览目录
-     */
-    private Map<Long, List<BrowseDirectory>> groupByEngine(List<BrowseDirectory> roots) {
-        Map<Long, List<BrowseDirectory>> byEngine = new LinkedHashMap<>();
-        for (BrowseDirectory root : roots) {
-            byEngine.computeIfAbsent(root.getEngineId(), k -> new ArrayList<>()).add(root);
+        try {
+            syncDirectory(root.getEngineId(), root.getPath());
+            LocalDateTime finished = LocalDateTime.now();
+            root.setLastSyncTime(finished);
+            if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+                root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, finished));
+            } else {
+                root.setNextSyncTime(null);
+            }
+            browseDirectoryRepository.save(root);
+        } catch (Exception e) {
+            log.error("保存后同步失败: id={}, path={}", root.getId(), root.getPath(), e);
+            // 即使同步失败，也排下次计划，避免永久卡住
+            if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+                root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, LocalDateTime.now()));
+                browseDirectoryRepository.save(root);
+            }
         }
-        return byEngine;
     }
 
-    /**
-     * 解析路径在 file_directory 中的父节点 ID（根路径为 null）
-     */
     private Long resolveParentId(Long engineId, String path) {
         if ("/".equals(path)) {
             return null;
@@ -136,9 +192,6 @@ public class DirFileSyncService {
                 .orElse(null);
     }
 
-    /**
-     * 同步一个目录树节点，并写回缩略图
-     */
     private void syncRecursive(Long engineId, String path, Long parentId, AlistClient client) {
         String thumb = syncOneDir(engineId, path, parentId, client);
         if (thumb != null) {
@@ -146,11 +199,6 @@ public class DirFileSyncService {
         }
     }
 
-    /**
-     * 同步单个目录：拉取列表 → 落库 → 解析缩略图 → 递归子目录
-     *
-     * @return 当前目录可用的缩略图 URL（自身或继承自子目录）
-     */
     private String syncOneDir(Long engineId, String path, Long parentId, AlistClient client) {
         log.info("同步目录: engineId={}, path={}", engineId, path);
         List<FileItem> items;
@@ -164,7 +212,6 @@ public class DirFileSyncService {
 
         Long directoryId = persistDirListing(engineId, path, parentId, items);
         String dirThumbnail = resolveDirThumbnail(engineId, path, items, client);
-        // 递归子目录，若当前无图则继承子目录缩略图
         dirThumbnail = syncChildrenAndInheritThumb(engineId, directoryId, items, client, dirThumbnail);
 
         if (dirThumbnail == null) {
@@ -176,9 +223,6 @@ public class DirFileSyncService {
         return dirThumbnail;
     }
 
-    /**
-     * 将 Alist 列表写入 file_directory / dir_file，并删除已不存在的子目录
-     */
     private Long persistDirListing(Long engineId, String path, Long parentId, List<FileItem> items) {
         return txTemplate.execute(status -> {
             FileDirectory directory = fileDirectoryRepository.findByEngineIdAndPath(engineId, path)
@@ -189,7 +233,6 @@ public class DirFileSyncService {
             directory.setName(PathUtils.nameOf(path));
             directory = fileDirectoryRepository.save(directory);
 
-            // 文件列表全量替换
             dirFileRepository.deleteByDirectoryId(directory.getId());
 
             List<DirFile> filesToSave = new ArrayList<>();
@@ -228,9 +271,6 @@ public class DirFileSyncService {
         });
     }
 
-    /**
-     * 取目录内第一张图片作为预览图；优先本地缓存，失败则回退代理 URL
-     */
     private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
         String firstImagePath = null;
         for (FileItem item : items) {
@@ -244,16 +284,11 @@ public class DirFileSyncService {
         }
         String cachedUrl = thumbnailCacheService.cacheThumbnail(engineId, firstImagePath, client);
         if (cachedUrl != null) {
-            log.info("目录预览图已缓存: engineId={}, path={}, cacheUrl={}", engineId, path, cachedUrl);
             return cachedUrl;
         }
-        log.warn("目录预览图缓存失败，回退到代理URL: engineId={}, path={}", engineId, path);
         return MediaTypes.proxyUrl(engineId, firstImagePath);
     }
 
-    /**
-     * 递归同步子目录；当前目录无缩略图时继承子目录缩略图
-     */
     private String syncChildrenAndInheritThumb(Long engineId, Long directoryId, List<FileItem> items,
                                                AlistClient client, String dirThumbnail) {
         for (FileItem item : items) {
@@ -272,9 +307,6 @@ public class DirFileSyncService {
         return dirThumbnail;
     }
 
-    /**
-     * 更新目录缩略图字段
-     */
     private void updateThumbnail(Long engineId, String path, String thumbnail) {
         txTemplate.executeWithoutResult(status ->
                 fileDirectoryRepository.findByEngineIdAndPath(engineId, path).ifPresent(directory -> {
@@ -283,9 +315,6 @@ public class DirFileSyncService {
                 }));
     }
 
-    /**
-     * 删除 Alist 侧已不存在的子目录及其子树、文件
-     */
     private void deleteMissingChildDirs(Long engineId, Long parentId, Set<String> currentDirPaths) {
         List<FileDirectory> existingDirs = fileDirectoryRepository.findByEngineIdAndParentId(engineId, parentId);
         for (FileDirectory existingDir : existingDirs) {
