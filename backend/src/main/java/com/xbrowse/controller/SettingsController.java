@@ -27,6 +27,8 @@ public class SettingsController {
         SystemSettings settings = new SystemSettings();
         settings.setThumbnailEnabled(appConfig.getThumbnailEnabled());
         settings.setDataDir(appConfig.getDataDir());
+        settings.setIgnoreDotDirs(appConfig.getIgnoreDotDirs());
+        settings.setIgnoreFileExtensions(appConfig.getIgnoreFileExtensions());
         return ApiResponse.success(settings);
     }
 
@@ -38,6 +40,12 @@ public class SettingsController {
     public ApiResponse<Void> updateSettings(@RequestBody SystemSettings settings) {
         if (settings.getThumbnailEnabled() != null) {
             appConfig.setThumbnailEnabled(settings.getThumbnailEnabled());
+        }
+        if (settings.getIgnoreDotDirs() != null) {
+            appConfig.setIgnoreDotDirs(settings.getIgnoreDotDirs());
+        }
+        if (settings.getIgnoreFileExtensions() != null) {
+            appConfig.setIgnoreFileExtensions(settings.getIgnoreFileExtensions());
         }
         return ApiResponse.success("设置更新成功", null);
     }

@@ -59,7 +59,7 @@ public class ThumbnailCacheService {
     private int maxThumbWidth;
 
     @Getter
-    @Value("${xbrowse.proxy-cache-enabled:true}")
+    @Value("${xbrowse.proxy-cache-enabled:false}")
     private boolean proxyCacheEnabled;
 
     private final Semaphore writeLimiter = new Semaphore(MAX_CACHE_WRITERS, true);

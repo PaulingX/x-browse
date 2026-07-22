@@ -1,5 +1,6 @@
 package com.xbrowse.service;
 
+import com.xbrowse.config.AppConfig;
 import com.xbrowse.dto.FileItem;
 import com.xbrowse.entity.BrowseDirectory;
 import com.xbrowse.entity.DirFile;
@@ -49,6 +50,7 @@ public class DirFileSyncService {
     private final AlistEngineService engineService;
     private final TransactionTemplate txTemplate;
     private final ThumbnailCacheService thumbnailCacheService;
+    private final AppConfig appConfig;
 
     /** 防止同一浏览目录并发同步 */
     private final ConcurrentHashMap<Long, Boolean> syncingIds = new ConcurrentHashMap<>();
@@ -273,6 +275,9 @@ public class DirFileSyncService {
             List<FileDirectory> dirsToSave = new ArrayList<>();
             Set<String> currentDirPaths = new HashSet<>();
             for (FileItem item : items) {
+                if (shouldSkipItem(item)) {
+                    continue;
+                }
                 if (Boolean.TRUE.equals(item.getIsDir())) {
                     currentDirPaths.add(item.getPath());
                     FileDirectory subDir = fileDirectoryRepository.findByEngineIdAndPath(engineId, item.getPath())
@@ -317,7 +322,7 @@ public class DirFileSyncService {
         // name -> thumbUrl
         java.util.Map<String, String> thumbByName = new java.util.LinkedHashMap<>();
         for (FileItem item : items) {
-            if (Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
+            if (shouldSkipItem(item) || Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
                 continue;
             }
             try {
@@ -345,10 +350,23 @@ public class DirFileSyncService {
         });
     }
 
+    /**
+     * 是否跳过入库/同步（点目录、配置的忽略后缀）
+     */
+    private boolean shouldSkipItem(FileItem item) {
+        if (item == null || item.getName() == null) {
+            return true;
+        }
+        if (Boolean.TRUE.equals(item.getIsDir())) {
+            return appConfig.shouldIgnoreDirName(item.getName());
+        }
+        return appConfig.shouldIgnoreFileName(item.getName());
+    }
+
     private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
         // 优先复用本层已生成的文件缩略图；缓存繁忙时仍回退 proxy，保证预览可用
         for (FileItem item : items) {
-            if (Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
+            if (shouldSkipItem(item) || Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
                 continue;
             }
             if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
@@ -367,7 +385,7 @@ public class DirFileSyncService {
     private String syncChildrenAndInheritThumb(Long engineId, Long directoryId, List<FileItem> items,
                                                AlistClient client, String dirThumbnail) {
         for (FileItem item : items) {
-            if (!Boolean.TRUE.equals(item.getIsDir())) {
+            if (!Boolean.TRUE.equals(item.getIsDir()) || shouldSkipItem(item)) {
                 continue;
             }
             try {
