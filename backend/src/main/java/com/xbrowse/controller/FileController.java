@@ -24,7 +24,6 @@ import org.springframework.web.bind.annotation.*;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -142,73 +141,22 @@ public class FileController {
     /**
      * 代理获取文件（用于跨域或需要认证的图片等）
      * <p>
-     * 优先读本地 proxy 缓存；未命中则拉取上游并可写回磁盘。
-     * 响应带 Cache-Control，便于浏览器二次访问。
+     * 不落盘原图，仅转发上游；带 Cache-Control 便于浏览器缓存。
      */
     @GetMapping("/proxy/{engineId}/**")
     public ResponseEntity<Resource> proxyFile(@PathVariable Long engineId, HttpServletRequest request) {
         try {
             String fullPath = PathUtils.extractFilePath(engineId, request.getRequestURI(), "proxy");
-            String contentType = MediaTypes.contentType(fullPath);
-
-            // 命中本地 proxy 缓存
-            Path cached = thumbnailCacheService.getCachedProxyPath(engineId, fullPath);
-            if (cached != null) {
-                Resource resource = new UrlResource(cached.toUri());
-                if (resource.exists()) {
-                    return ResponseEntity.ok()
-                            .contentType(MediaType.parseMediaType(contentType))
-                            .header(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds)
-                            .body(resource);
-                }
-            }
-
             String fileUrl = resolveFileUrl(engineId, fullPath);
             if (fileUrl == null) {
                 return ResponseEntity.notFound().build();
             }
-
-            // 图片可落盘缓存；非图片仍直连上游
-            if (MediaTypes.isImage(fullPath) && thumbnailCacheService.isProxyCacheEnabled()) {
-                return proxyAndCache(engineId, fullPath, fileUrl, contentType);
-            }
-            return openUpstream(fileUrl, contentType, null,
+            return openUpstream(fileUrl, MediaTypes.contentType(fullPath), null,
                     Map.of(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds));
         } catch (Exception e) {
             log.error("代理文件失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
         }
-    }
-
-    /**
-     * 拉取上游图片，写入本地 proxy 缓存后返回（二次访问走磁盘）
-     */
-    private ResponseEntity<Resource> proxyAndCache(Long engineId, String fullPath, String fileUrl,
-                                                   String contentType) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
-        connection.setRequestMethod("GET");
-        connection.setConnectTimeout(MediaTypes.connectTimeoutMs());
-        connection.setReadTimeout(MediaTypes.readTimeoutMs());
-        int status = connection.getResponseCode();
-        if (status >= 400) {
-            connection.disconnect();
-            return ResponseEntity.status(status).build();
-        }
-        try (InputStream in = connection.getInputStream()) {
-            Path cached = thumbnailCacheService.cacheProxyFile(engineId, fullPath, in);
-            if (cached != null && Files.exists(cached)) {
-                Resource resource = new UrlResource(cached.toUri());
-                return ResponseEntity.ok()
-                        .contentType(MediaType.parseMediaType(contentType))
-                        .header(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds)
-                        .body(resource);
-            }
-        } finally {
-            connection.disconnect();
-        }
-        // 缓存失败则再直连上游
-        return openUpstream(fileUrl, contentType, null,
-                Map.of(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds));
     }
 
     /**

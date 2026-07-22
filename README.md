@@ -31,7 +31,7 @@
 
 ### 缓存与性能
 - 同步时为图片生成列表缩略图：`data/cache/thumbnails/`
-- 可选 proxy 原图磁盘缓存：`data/cache/proxy/`
+- 原图不落盘，查看时走 `/api/files/proxy` 代理
 - 响应头 `Cache-Control`，利于浏览器二次加载
 - 前端列表预加载限流（并发/批量），减少弱网卡顿
 
@@ -72,11 +72,10 @@ ports:
 | PORT | 对外端口（compose） | 2041 |
 | XBROWSE_PORT | 服务端口 | 8080 |
 | XBROWSE_DATA_DIR | 数据目录（含 SQLite） | /app/data 或 ./data |
-| XBROWSE_CACHE_DIR | 缓存目录（缩略图/proxy） | /app/data/cache 或 ./data/cache |
+| XBROWSE_CACHE_DIR | 缓存目录（列表缩略图） | /app/data/cache 或 ./data/cache |
 | XBROWSE_THUMBNAIL_ENABLED | 是否生成缩略图 | true |
 | XBROWSE_THUMBNAIL_MAX_WIDTH | 列表缩略图最大边长 | 200 |
 | XBROWSE_IMAGE_CACHE_SECONDS | 浏览器缓存秒数 | 86400 |
-| XBROWSE_PROXY_CACHE_ENABLED | 是否缓存 proxy 原图到磁盘 | true |
 | XBROWSE_JWT_SECRET | JWT 密钥 | （需生产环境修改） |
 | XBROWSE_JWT_EXPIRATION | JWT 过期时间（秒） | 604800 |
 | XBROWSE_ADMIN_PASSWORD | 初始管理员密码 | admin123 |
@@ -145,7 +144,7 @@ x-browse/
 | 浏览目录 | 管理员配置的可浏览根路径 + **独立同步计划** |
 | user_directory | 用户 ↔ 浏览目录 权限 |
 | file_directory / dir_file | 同步下来的目录树与文件缓存 |
-| 缩略图缓存 | 列表小图；可选 proxy 原图缓存 |
+| 缩略图缓存 | 列表小图（原图不落盘） |
 
 ## API 概览
 
