@@ -167,12 +167,52 @@ public class FileBrowseService {
     }
 
     /**
-     * 获取目录预览图 URL（优先使用同步时写入的缓存地址）
+     * 获取目录预览图 URL：
+     * 1) file_directory.thumbnail_url
+     * 2) 目录下第一张图片的 thumbnail_url / 代理 URL
+     * 同步未完成时仍尽量给出可显示地址
      */
     public String getDirThumbnail(Long engineId, String dirPath) {
-        return fileDirectoryRepository.findByEngineIdAndPath(engineId, PathUtils.normalize(dirPath))
-                .map(FileDirectory::getThumbnailUrl)
-                .orElse(null);
+        Optional<FileDirectory> opt = fileDirectoryRepository.findByEngineIdAndPath(engineId, PathUtils.normalize(dirPath));
+        if (opt.isEmpty()) {
+            return null;
+        }
+        FileDirectory directory = opt.get();
+        if (directory.getThumbnailUrl() != null && !directory.getThumbnailUrl().isEmpty()) {
+            return directory.getThumbnailUrl();
+        }
+        return resolveDirThumbFromChildren(engineId, directory.getId());
+    }
+
+    /**
+     * 从目录内文件回退解析预览图（同步中/缩略图未写回目录字段时）
+     */
+    private String resolveDirThumbFromChildren(Long engineId, Long directoryId) {
+        if (directoryId == null) {
+            return null;
+        }
+        List<DirFile> files = dirFileRepository.findByDirectoryId(directoryId);
+        for (DirFile df : files) {
+            if (Boolean.TRUE.equals(df.getIsDir()) || df.getName() == null) {
+                continue;
+            }
+            if (!MediaTypes.isImage(df.getName())) {
+                continue;
+            }
+            if (df.getThumbnailUrl() != null && !df.getThumbnailUrl().isEmpty()) {
+                return df.getThumbnailUrl();
+            }
+            String fullPath = PathUtils.join(df.getParentPath(), df.getName());
+            return MediaTypes.proxyUrl(engineId, fullPath);
+        }
+        // 再尝试已同步的子目录缩略图
+        List<FileDirectory> subDirs = fileDirectoryRepository.findByEngineIdAndParentId(engineId, directoryId);
+        for (FileDirectory sub : subDirs) {
+            if (sub.getThumbnailUrl() != null && !sub.getThumbnailUrl().isEmpty()) {
+                return sub.getThumbnailUrl();
+            }
+        }
+        return null;
     }
 
     /**
@@ -287,7 +327,7 @@ public class FileBrowseService {
     }
 
     /**
-     * FileDirectory 转 FileItem（目录项）
+     * FileDirectory 转 FileItem（目录项）；无目录缩略图时回退子文件预览
      */
     private FileItem toFileItem(FileDirectory directory) {
         FileItem fi = new FileItem();
@@ -296,8 +336,12 @@ public class FileBrowseService {
         fi.setSize(0L);
         fi.setPath(directory.getPath());
         fi.setModified(directory.getModifiedTime());
-        fi.setUrl(directory.getThumbnailUrl());
-        fi.setThumbnailUrl(directory.getThumbnailUrl());
+        String thumb = directory.getThumbnailUrl();
+        if (thumb == null || thumb.isEmpty()) {
+            thumb = resolveDirThumbFromChildren(directory.getEngineId(), directory.getId());
+        }
+        fi.setUrl(thumb);
+        fi.setThumbnailUrl(thumb);
         return fi;
     }
 }

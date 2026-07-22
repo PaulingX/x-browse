@@ -39,12 +39,12 @@ public class DirectoryController {
     }
 
     /**
-     * 添加目录（仅管理员）
+     * 添加目录（仅管理员）；保存成功后后台同步，不阻塞响应
      */
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<BrowseDirectoryDTO> addDirectory(@Valid @RequestBody BrowseDirectoryDTO dto) {
-        return ApiResponse.success("目录添加成功", directoryService.addDirectory(dto));
+        return ApiResponse.success("目录已保存，后台同步中", directoryService.addDirectory(dto));
     }
 
     /**
@@ -58,12 +58,12 @@ public class DirectoryController {
     }
 
     /**
-     * 立即同步指定浏览目录（仅管理员）
+     * 立即同步指定浏览目录（仅管理员，后台执行）
      */
     @PostMapping("/{id}/sync")
     @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<BrowseDirectoryDTO> syncDirectory(@PathVariable Long id) {
-        return ApiResponse.success("同步完成", directoryService.syncNow(id));
+        return ApiResponse.success("已开始后台同步", directoryService.syncNow(id));
     }
 
     /**

@@ -13,6 +13,7 @@ import com.xbrowse.util.PathUtils;
 import com.xbrowse.util.SyncScheduleUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -51,6 +52,12 @@ public class DirFileSyncService {
 
     /** 防止同一浏览目录并发同步 */
     private final ConcurrentHashMap<Long, Boolean> syncingIds = new ConcurrentHashMap<>();
+
+    /**
+     * 全局同步串行：多目录定时/手动同时跑时，避免 SQLite 与图片缓存写互相卡住
+     * （真正耗时的下载在 ThumbnailCacheService 内已有分片锁 + 并发上限）
+     */
+    private final Object syncGlobalLock = new Object();
 
     /**
      * 调度轮询：逐个检查到期的浏览目录并同步
@@ -108,39 +115,46 @@ public class DirFileSyncService {
         }
         long start = System.currentTimeMillis();
         try {
-            BrowseDirectory root = browseDirectoryRepository.findById(browseDirectoryId).orElse(null);
-            if (root == null) {
-                log.warn("浏览目录不存在: id={}", browseDirectoryId);
-                return;
+            // 串行执行实际同步，降低多任务写库/写缓存冲突
+            synchronized (syncGlobalLock) {
+                doSyncBrowseDirectory(browseDirectoryId, force, start);
             }
-            if (!force && BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
-                log.info("浏览目录未启用同步: id={}, path={}", root.getId(), root.getPath());
-                return;
-            }
-            if (!force && !SyncScheduleUtils.isDue(root, LocalDateTime.now())) {
-                log.debug("浏览目录未到期: id={}, next={}", root.getId(), root.getNextSyncTime());
-                return;
-            }
-
-            log.info("开始同步浏览目录: id={}, engineId={}, path={}, force={}",
-                    root.getId(), root.getEngineId(), root.getPath(), force);
-            String rootPath = PathUtils.normalize(root.getPath());
-            AlistClient client = engineService.getClient(root.getEngineId());
-            syncRecursive(root.getEngineId(), rootPath, resolveParentId(root.getEngineId(), rootPath), client);
-
-            LocalDateTime finished = LocalDateTime.now();
-            root.setLastSyncTime(finished);
-            if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
-                root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, finished));
-            } else {
-                root.setNextSyncTime(null);
-            }
-            browseDirectoryRepository.save(root);
-            log.info("浏览目录同步完成: id={}, path={}, 耗时: {}ms, next={}",
-                    root.getId(), root.getPath(), System.currentTimeMillis() - start, root.getNextSyncTime());
         } finally {
             syncingIds.remove(browseDirectoryId);
         }
+    }
+
+    private void doSyncBrowseDirectory(Long browseDirectoryId, boolean force, long start) {
+        BrowseDirectory root = browseDirectoryRepository.findById(browseDirectoryId).orElse(null);
+        if (root == null) {
+            log.warn("浏览目录不存在: id={}", browseDirectoryId);
+            return;
+        }
+        if (!force && BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+            log.info("浏览目录未启用同步: id={}, path={}", root.getId(), root.getPath());
+            return;
+        }
+        if (!force && !SyncScheduleUtils.isDue(root, LocalDateTime.now())) {
+            log.debug("浏览目录未到期: id={}, next={}", root.getId(), root.getNextSyncTime());
+            return;
+        }
+
+        log.info("开始同步浏览目录: id={}, engineId={}, path={}, force={}",
+                root.getId(), root.getEngineId(), root.getPath(), force);
+        String rootPath = PathUtils.normalize(root.getPath());
+        AlistClient client = engineService.getClient(root.getEngineId());
+        syncRecursive(root.getEngineId(), rootPath, resolveParentId(root.getEngineId(), rootPath), client);
+
+        LocalDateTime finished = LocalDateTime.now();
+        root.setLastSyncTime(finished);
+        if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+            root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, finished));
+        } else {
+            root.setNextSyncTime(null);
+        }
+        browseDirectoryRepository.save(root);
+        log.info("浏览目录同步完成: id={}, path={}, 耗时: {}ms, next={}",
+                root.getId(), root.getPath(), System.currentTimeMillis() - start, root.getNextSyncTime());
     }
 
     /**
@@ -149,37 +163,49 @@ public class DirFileSyncService {
     public void syncDirectory(Long engineId, String path) {
         log.info("手动同步路径: engineId={}, path={}", engineId, path);
         long start = System.currentTimeMillis();
-        String normalizedPath = PathUtils.normalize(path);
-        AlistClient client = engineService.getClient(engineId);
-        syncRecursive(engineId, normalizedPath, resolveParentId(engineId, normalizedPath), client);
+        synchronized (syncGlobalLock) {
+            String normalizedPath = PathUtils.normalize(path);
+            AlistClient client = engineService.getClient(engineId);
+            syncRecursive(engineId, normalizedPath, resolveParentId(engineId, normalizedPath), client);
+        }
         log.info("路径同步完成: engineId={}, path={}, 耗时: {}ms", engineId, path, System.currentTimeMillis() - start);
     }
 
     /**
-     * 添加/更新后：立即同步并写入 next_sync_time
+     * 添加后后台同步（异步，不阻塞保存接口）
      */
+    @Async("syncTaskExecutor")
     public void syncBrowseDirectoryAfterSave(Long browseDirectoryId) {
-        BrowseDirectory root = browseDirectoryRepository.findById(browseDirectoryId).orElse(null);
-        if (root == null) {
+        if (browseDirectoryId == null) {
             return;
         }
         try {
-            syncDirectory(root.getEngineId(), root.getPath());
-            LocalDateTime finished = LocalDateTime.now();
-            root.setLastSyncTime(finished);
-            if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
-                root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, finished));
-            } else {
-                root.setNextSyncTime(null);
-            }
-            browseDirectoryRepository.save(root);
+            log.info("后台开始同步新目录: id={}", browseDirectoryId);
+            syncBrowseDirectory(browseDirectoryId, true);
         } catch (Exception e) {
-            log.error("保存后同步失败: id={}, path={}", root.getId(), root.getPath(), e);
-            // 即使同步失败，也排下次计划，避免永久卡住
-            if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
-                root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, LocalDateTime.now()));
-                browseDirectoryRepository.save(root);
-            }
+            log.error("保存后后台同步失败: id={}", browseDirectoryId, e);
+            browseDirectoryRepository.findById(browseDirectoryId).ifPresent(root -> {
+                if (!BrowseDirectory.SYNC_MODE_NONE.equals(root.getSyncMode())) {
+                    root.setNextSyncTime(SyncScheduleUtils.calcNextSyncTime(root, LocalDateTime.now()));
+                    browseDirectoryRepository.save(root);
+                }
+            });
+        }
+    }
+
+    /**
+     * 手动触发后台同步（异步，接口立即返回）
+     */
+    @Async("syncTaskExecutor")
+    public void syncBrowseDirectoryAsync(Long browseDirectoryId) {
+        if (browseDirectoryId == null) {
+            return;
+        }
+        try {
+            log.info("后台手动同步: id={}", browseDirectoryId);
+            syncBrowseDirectory(browseDirectoryId, true);
+        } catch (Exception e) {
+            log.error("后台手动同步失败: id={}", browseDirectoryId, e);
         }
     }
 
@@ -213,10 +239,16 @@ public class DirFileSyncService {
         Long directoryId = persistDirListing(engineId, path, parentId, items);
         // 为图片文件生成列表缩略图并写回 dir_file.thumbnail_url
         cacheFileThumbnails(engineId, directoryId, items, client);
+        // 本层有图则立刻写入目录预览，刷新页面也能看到（不必等整棵子树同步完）
         String dirThumbnail = resolveDirThumbnail(engineId, path, items, client);
-        dirThumbnail = syncChildrenAndInheritThumb(engineId, directoryId, items, client, dirThumbnail);
+        if (dirThumbnail != null) {
+            updateThumbnail(engineId, path, dirThumbnail);
+        }
 
-        if (dirThumbnail == null) {
+        dirThumbnail = syncChildrenAndInheritThumb(engineId, directoryId, items, client, dirThumbnail);
+        if (dirThumbnail != null) {
+            updateThumbnail(engineId, path, dirThumbnail);
+        } else {
             dirThumbnail = txTemplate.execute(status ->
                     fileDirectoryRepository.findByEngineIdAndPath(engineId, path)
                             .map(FileDirectory::getThumbnailUrl)
@@ -275,11 +307,15 @@ public class DirFileSyncService {
 
     /**
      * 同步当前目录下图片文件的列表缩略图，写入 dir_file.thumbnail_url
+     * <p>
+     * 磁盘写入在事务外完成；库表批量一次提交，避免「每张图一个事务」导致 SQLite 锁等待/假死。
      */
     private void cacheFileThumbnails(Long engineId, Long directoryId, List<FileItem> items, AlistClient client) {
         if (directoryId == null || items == null || items.isEmpty()) {
             return;
         }
+        // name -> thumbUrl
+        java.util.Map<String, String> thumbByName = new java.util.LinkedHashMap<>();
         for (FileItem item : items) {
             if (Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
                 continue;
@@ -290,21 +326,27 @@ public class DirFileSyncService {
                     continue;
                 }
                 item.setThumbnailUrl(thumbUrl);
-                txTemplate.executeWithoutResult(status -> {
-                    DirFile df = dirFileRepository.findByDirectoryIdAndName(directoryId, item.getName());
-                    if (df != null) {
-                        df.setThumbnailUrl(thumbUrl);
-                        dirFileRepository.save(df);
-                    }
-                });
+                thumbByName.put(item.getName(), thumbUrl);
             } catch (Exception e) {
                 log.warn("图片缩略图同步失败: engineId={}, path={}, err={}", engineId, item.getPath(), e.getMessage());
             }
         }
+        if (thumbByName.isEmpty()) {
+            return;
+        }
+        txTemplate.executeWithoutResult(status -> {
+            for (java.util.Map.Entry<String, String> e : thumbByName.entrySet()) {
+                DirFile df = dirFileRepository.findByDirectoryIdAndName(directoryId, e.getKey());
+                if (df != null) {
+                    df.setThumbnailUrl(e.getValue());
+                    dirFileRepository.save(df);
+                }
+            }
+        });
     }
 
     private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
-        // 优先复用已生成的文件缩略图
+        // 优先复用本层已生成的文件缩略图；缓存繁忙时仍回退 proxy，保证预览可用
         for (FileItem item : items) {
             if (Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
                 continue;
@@ -316,6 +358,7 @@ public class DirFileSyncService {
             if (cachedUrl != null) {
                 return cachedUrl;
             }
+            // 写缓存失败/超时：用代理原图做目录预览，避免刷新后空白
             return MediaTypes.proxyUrl(engineId, item.getPath());
         }
         return null;

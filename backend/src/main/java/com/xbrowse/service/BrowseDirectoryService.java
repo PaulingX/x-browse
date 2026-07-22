@@ -36,7 +36,7 @@ public class BrowseDirectoryService {
     }
 
     /**
-     * 添加浏览目录：保存同步配置后立即同步该路径
+     * 添加浏览目录：保存配置后异步同步，接口立即返回
      */
     public BrowseDirectoryDTO addDirectory(BrowseDirectoryDTO dto) {
         if (directoryRepository.existsByEngineIdAndPath(dto.getEngineId(), dto.getPath())) {
@@ -45,14 +45,17 @@ public class BrowseDirectoryService {
         BrowseDirectory directory = new BrowseDirectory();
         applyDto(directory, dto, true);
         SyncScheduleUtils.normalize(directory);
-        // 首次添加：立即参与调度（next 先设为现在，保存后立即同步）
+        // 首次添加：标记可调度；同步在后台执行，避免保存按钮一直转圈
         if (!BrowseDirectory.SYNC_MODE_NONE.equals(directory.getSyncMode())) {
             directory.setNextSyncTime(LocalDateTime.now());
         }
         directory = directoryRepository.save(directory);
 
-        dirFileSyncService.syncBrowseDirectoryAfterSave(directory.getId());
-        return toDTO(directoryRepository.findById(directory.getId()).orElse(directory));
+        // 异步同步，不阻塞 HTTP
+        if (!BrowseDirectory.SYNC_MODE_NONE.equals(directory.getSyncMode())) {
+            dirFileSyncService.syncBrowseDirectoryAfterSave(directory.getId());
+        }
+        return toDTO(directory);
     }
 
     /**
@@ -83,15 +86,13 @@ public class BrowseDirectoryService {
     }
 
     /**
-     * 手动立即同步指定浏览目录
+     * 手动触发同步（后台执行，立即返回当前目录信息）
      */
     public BrowseDirectoryDTO syncNow(Long id) {
-        if (!directoryRepository.existsById(id)) {
-            throw new RuntimeException("目录不存在");
-        }
-        dirFileSyncService.syncBrowseDirectory(id, true);
-        return toDTO(directoryRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("目录不存在")));
+        BrowseDirectory directory = directoryRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("目录不存在"));
+        dirFileSyncService.syncBrowseDirectoryAsync(id);
+        return toDTO(directory);
     }
 
     private void applyDto(BrowseDirectory directory, BrowseDirectoryDTO dto, boolean creating) {

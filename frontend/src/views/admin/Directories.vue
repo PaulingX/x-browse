@@ -418,7 +418,7 @@ async function syncNow(dir) {
   try {
     const res = await api.post(`/api/directories/${dir.id}/sync`)
     if (res.code === 200) {
-      showToast('同步完成')
+      showToast(res.message || '已开始后台同步')
       loadData()
     }
   } catch (error) {
@@ -458,7 +458,7 @@ async function onSubmit() {
       res = await api.post('/api/directories', form.value)
     }
     if (res.code === 200) {
-      showToast(editingDir.value ? '更新成功' : '添加成功')
+      showToast(editingDir.value ? '更新成功' : (res.message || '目录已保存，后台同步中'))
       showAdd.value = false
       editingDir.value = null
       form.value = defaultForm()

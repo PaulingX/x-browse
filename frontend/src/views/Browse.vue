@@ -51,12 +51,13 @@
         >
           <div class="file-icon">
             <img
-              v-if="item.isDir && (dirThumbnails[item.path] || item.url)"
-              :src="dirThumbnails[item.path] || item.url"
+              v-if="item.isDir && dirPreviewSrc(item)"
+              :src="dirPreviewSrc(item)"
               :alt="item.name"
               class="file-thumbnail dir-preview"
               loading="lazy"
-              @error="e => e.target.style.display = 'none'"
+              decoding="async"
+              @error="onDirThumbError($event, item)"
             />
             <van-icon
               v-else-if="item.isDir"
@@ -422,6 +423,22 @@ function listThumbSrc(item) {
   return item.thumbnailUrl || item.url || ''
 }
 
+/** 目录预览：批量接口 > 列表自带 thumbnail/url */
+function dirPreviewSrc(item) {
+  if (!item) return ''
+  return dirThumbnails.value[item.path] || item.thumbnailUrl || item.url || ''
+}
+
+function onDirThumbError(e, item) {
+  // 失败后清掉错误地址，避免一直空白；回退文件夹图标
+  if (item?.path && dirThumbnails.value[item.path]) {
+    const next = { ...dirThumbnails.value }
+    delete next[item.path]
+    dirThumbnails.value = next
+  }
+  e.target.style.display = 'none'
+}
+
 function estimateImageMemory(img) {
   if (img.naturalWidth && img.naturalHeight) {
     return img.naturalWidth * img.naturalHeight * 4
@@ -569,7 +586,8 @@ async function fetchDirThumbnails(dirPaths) {
     const res = await api.get(`/api/files/dir-thumbnail?${parts.join('&')}`)
     if (res.code === 200) {
       const merged = { ...dirThumbnails.value }
-      for (const [path, url] of Object.entries(res.data)) {
+      for (const [path, url] of Object.entries(res.data || {})) {
+        // 仅写入有效 URL；null 不占位，便于同步完成后再次拉取
         if (url) merged[path] = url
       }
       dirThumbnails.value = merged
