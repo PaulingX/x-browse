@@ -197,10 +197,7 @@ public class FileBrowseService {
     }
 
     /**
-     * 获取目录预览图 URL：
-     * 1) file_directory.thumbnail_url
-     * 2) 目录下第一张图片的 thumbnail_url / 代理 URL
-     * 同步未完成时仍尽量给出可显示地址
+     * 获取目录预览图 URL：目录字段或子文件/子目录的原图代理
      */
     public String getDirThumbnail(Long engineId, String dirPath) {
         Optional<FileDirectory> opt = fileDirectoryRepository.findByEngineIdAndPath(engineId, PathUtils.normalize(dirPath));
@@ -215,7 +212,7 @@ public class FileBrowseService {
     }
 
     /**
-     * 从目录内文件回退解析预览图（同步中/缩略图未写回目录字段时）
+     * 从目录内第一张图片原图代理回退解析预览图
      */
     private String resolveDirThumbFromChildren(Long engineId, Long directoryId) {
         if (directoryId == null) {
@@ -229,13 +226,9 @@ public class FileBrowseService {
             if (!MediaTypes.isImage(df.getName())) {
                 continue;
             }
-            if (df.getThumbnailUrl() != null && !df.getThumbnailUrl().isEmpty()) {
-                return df.getThumbnailUrl();
-            }
             String fullPath = PathUtils.join(df.getParentPath(), df.getName());
             return MediaTypes.proxyUrl(engineId, fullPath);
         }
-        // 再尝试已同步的子目录缩略图
         List<FileDirectory> subDirs = fileDirectoryRepository.findByEngineIdAndParentId(engineId, directoryId);
         for (FileDirectory sub : subDirs) {
             if (sub.getThumbnailUrl() != null && !sub.getThumbnailUrl().isEmpty()) {
@@ -279,14 +272,13 @@ public class FileBrowseService {
     private List<FileItem> listFromAlist(Long engineId, String path, boolean refresh) {
         try {
             AlistClient client = engineService.getClient(engineId);
-            List<FileItem> items = client.listFiles(path, refresh, 1, 1000);
+            List<FileItem> items = client.listAllFiles(path, refresh, 1000);
             for (FileItem item : items) {
                 if (Boolean.TRUE.equals(item.getIsDir())) {
                     continue;
                 }
                 item.setUrl(MediaTypes.mediaUrl(engineId, item.getPath(), item.getName()));
-                // 未同步时列表缩略图回退为原图代理（前端仍会懒加载）
-                if (MediaTypes.isImage(item.getName()) && (item.getThumbnailUrl() == null || item.getThumbnailUrl().isEmpty())) {
+                if (MediaTypes.isImage(item.getName())) {
                     item.setThumbnailUrl(item.getUrl());
                 }
             }
@@ -331,7 +323,7 @@ public class FileBrowseService {
     }
 
     /**
-     * DirFile 转 FileItem：url=原图/视频流，thumbnailUrl=列表小图
+     * DirFile 转 FileItem：url / thumbnailUrl 均用原图代理（不生成缩略图）
      */
     private FileItem toFileItem(DirFile df, Long engineId) {
         FileItem fi = new FileItem();
@@ -348,9 +340,7 @@ public class FileBrowseService {
         } else {
             fi.setUrl(MediaTypes.mediaUrl(engineId, fullPath, df.getName()));
             if (MediaTypes.isImage(df.getName())) {
-                // 已同步缩略图优先，否则回退原图代理
-                String thumb = df.getThumbnailUrl();
-                fi.setThumbnailUrl(thumb != null && !thumb.isEmpty() ? thumb : fi.getUrl());
+                fi.setThumbnailUrl(fi.getUrl());
             }
         }
         return fi;

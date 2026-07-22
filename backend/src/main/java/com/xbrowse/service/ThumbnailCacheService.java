@@ -13,7 +13,6 @@ import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
 import javax.imageio.stream.ImageOutputStream;
 import java.awt.Graphics2D;
-import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -33,8 +32,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * 列表缩略图本地缓存服务
  * <p>
- * 同步时生成列表用 WebP 小图：{cacheDir}/thumbnails/{engineId}/{pathHash}.webp
- * 原图不落盘，仅通过 /api/files/proxy 代理访问。
+ * 规则：原图 <= 阈值（默认 500KB）不生成缩略图，列表直接用原图；
+ * 超过阈值则原图转 WebP（不缩放，quality=1）写入缓存。
  */
 @Slf4j
 @Service
@@ -42,7 +41,7 @@ public class ThumbnailCacheService {
 
     private static final String THUMBNAILS_DIR = "thumbnails";
     private static final String THUMB_EXT = ".webp";
-    private static final float WEBP_QUALITY = 0.75f;
+    private static final float WEBP_QUALITY = 1.0f;
     private static final int DOWNLOAD_READ_TIMEOUT_MS = 60_000;
     private static final int MAX_CACHE_WRITERS = 2;
     private static final long LOCK_WAIT_MS = 30_000L;
@@ -54,8 +53,9 @@ public class ThumbnailCacheService {
     @Value("${xbrowse.thumbnail-enabled:true}")
     private boolean thumbnailEnabled;
 
-    @Value("${xbrowse.thumbnail-max-width:200}")
-    private int maxThumbWidth;
+    /** 小于等于该字节数不生成缩略图（默认 500KB） */
+    @Value("${xbrowse.thumbnail-min-source-bytes:512000}")
+    private long minSourceBytes;
 
     private final Semaphore writeLimiter = new Semaphore(MAX_CACHE_WRITERS, true);
     private final Object[] fileStripes = new Object[STRIPE_COUNT];
@@ -71,7 +71,8 @@ public class ThumbnailCacheService {
         ImageIO.scanForPlugins();
         try {
             Files.createDirectories(Paths.get(cacheDir, THUMBNAILS_DIR));
-            log.info("缩略图缓存目录初始化完成: {}", Paths.get(cacheDir, THUMBNAILS_DIR).toAbsolutePath());
+            log.info("缩略图缓存目录初始化完成: {}, minSourceBytes={}, webpQuality={}",
+                    Paths.get(cacheDir, THUMBNAILS_DIR).toAbsolutePath(), minSourceBytes, WEBP_QUALITY);
             boolean hasWebp = false;
             for (String f : ImageIO.getWriterFormatNames()) {
                 if ("webp".equalsIgnoreCase(f)) {
@@ -88,7 +89,9 @@ public class ThumbnailCacheService {
     }
 
     /**
-     * 缓存列表缩略图（WebP，最大边 maxThumbWidth）
+     * 缓存列表缩略图。
+     *
+     * @return 缩略图 URL；小图或不生成时返回 null（调用方回退原图代理）
      */
     public String cacheThumbnail(Long engineId, String imagePath, AlistClient client) {
         if (!thumbnailEnabled || engineId == null || imagePath == null) {
@@ -121,8 +124,12 @@ public class ThumbnailCacheService {
                     return null;
                 }
                 Files.createDirectories(cachePath.getParent());
-                boolean ok = downloadAndResizeAtomic(fileUrl, cachePath, maxThumbWidth);
-                if (ok && isNonEmptyFile(cachePath)) {
+                Boolean result = downloadAndConvertWebp(fileUrl, cachePath);
+                if (result == null) {
+                    // 小图：不生成缩略图
+                    return null;
+                }
+                if (result && isNonEmptyFile(cachePath)) {
                     return url;
                 }
                 log.warn("缩略图写入无效，放弃: engineId={}, path={}", engineId, imagePath);
@@ -155,7 +162,10 @@ public class ThumbnailCacheService {
         return "/api/files/thumbnail/" + engineId + "/" + cacheFileName;
     }
 
-    private boolean downloadAndResizeAtomic(String fileUrl, Path targetPath, int maxWidth) throws IOException {
+    /**
+     * @return true 已生成缩略图；false 失败；null 源图过小跳过
+     */
+    private Boolean downloadAndConvertWebp(String fileUrl, Path targetPath) throws IOException {
         Path tmp = tmpPath(targetPath);
         HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
         connection.setRequestMethod("GET");
@@ -166,7 +176,11 @@ public class ThumbnailCacheService {
             if (data == null || data.length == 0) {
                 return false;
             }
-            if (!writeResizedWebp(data, tmp, maxWidth)) {
+            if (data.length <= minSourceBytes) {
+                log.debug("源图 <= {}B，跳过缩略图: size={}B", minSourceBytes, data.length);
+                return null;
+            }
+            if (!writeOriginalAsWebp(data, tmp)) {
                 return false;
             }
             if (!isNonEmptyFile(tmp)) {
@@ -180,7 +194,8 @@ public class ThumbnailCacheService {
         }
     }
 
-    private boolean writeResizedWebp(byte[] data, Path tmp, int maxWidth) {
+    /** 原图转 WebP（不缩放），quality=1 */
+    private boolean writeOriginalAsWebp(byte[] data, Path tmp) {
         try {
             BufferedImage src = ImageIO.read(new ByteArrayInputStream(data));
             if (src == null) {
@@ -188,8 +203,7 @@ public class ThumbnailCacheService {
                 return false;
             }
             BufferedImage rgb = toRgb(src);
-            BufferedImage scaled = scaleDown(rgb, maxWidth);
-            if (!writeWebp(scaled, tmp, WEBP_QUALITY)) {
+            if (!writeWebp(rgb, tmp, WEBP_QUALITY)) {
                 log.warn("写出 WebP 缩略图失败");
                 deleteQuietly(tmp);
                 return false;
@@ -249,26 +263,6 @@ public class ThumbnailCacheService {
             g.dispose();
         }
         return rgb;
-    }
-
-    private BufferedImage scaleDown(BufferedImage src, int maxEdge) {
-        int w = src.getWidth();
-        int h = src.getHeight();
-        if (w <= 0 || h <= 0 || (w <= maxEdge && h <= maxEdge)) {
-            return src;
-        }
-        double scale = Math.min((double) maxEdge / w, (double) maxEdge / h);
-        int nw = Math.max(1, (int) Math.round(w * scale));
-        int nh = Math.max(1, (int) Math.round(h * scale));
-        BufferedImage out = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = out.createGraphics();
-        try {
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            g.drawImage(src, 0, 0, nw, nh, null);
-        } finally {
-            g.dispose();
-        }
-        return out;
     }
 
     private boolean isNonEmptyFile(Path path) {

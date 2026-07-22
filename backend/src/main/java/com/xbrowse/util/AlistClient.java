@@ -28,6 +28,7 @@ public class AlistClient {
     private static final int READ_TIMEOUT_MS = 30_000;
     private static final int DEFAULT_PAGE = 1;
     private static final int DEFAULT_PER_PAGE = 1000;
+    private static final int MAX_LIST_PAGES = 500;
 
     private final String url;
     private final String token;
@@ -54,16 +55,16 @@ public class AlistClient {
     }
 
     /**
-     * 获取目录列表（默认分页参数）
+     * 获取目录列表：自动翻页拉全量，避免单页上限导致漏文件
      */
     public List<FileItem> listFiles(String path, boolean refresh) {
-        return listFiles(path, refresh, DEFAULT_PAGE, DEFAULT_PER_PAGE);
+        return listAllFiles(path, refresh, DEFAULT_PER_PAGE);
     }
 
     /**
-     * 获取目录列表（支持分页）
+     * 获取目录单页列表
      *
-     * @param path    Alist 路径，支持中文
+     * @param path    Alist 路径（支持中文）
      * @param refresh 是否强制刷新 Alist 缓存
      */
     @SuppressWarnings("unchecked")
@@ -101,6 +102,26 @@ public class AlistClient {
             items.add(fileItem);
         }
         return items;
+    }
+
+    /**
+     * 拉取目录下全部条目（自动翻页）
+     */
+    public List<FileItem> listAllFiles(String path, boolean refresh, int perPage) {
+        int pageSize = Math.max(1, perPage);
+        List<FileItem> all = new ArrayList<>();
+        for (int page = 1; page <= MAX_LIST_PAGES; page++) {
+            // 仅第一页 refresh，避免每页都强制扫盘
+            List<FileItem> pageItems = listFiles(path, refresh && page == 1, page, pageSize);
+            if (pageItems.isEmpty()) {
+                break;
+            }
+            all.addAll(pageItems);
+            if (pageItems.size() < pageSize) {
+                break;
+            }
+        }
+        return all;
     }
 
     /**
@@ -147,9 +168,6 @@ public class AlistClient {
         return resp.getBody();
     }
 
-    /**
-     * 从 Alist 响应中取出 data 对象
-     */
     @SuppressWarnings("unchecked")
     private Map<String, Object> dataMap(Map<String, Object> response) {
         if (response == null) {

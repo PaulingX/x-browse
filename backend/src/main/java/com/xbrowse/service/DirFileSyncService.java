@@ -21,7 +21,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -49,16 +51,12 @@ public class DirFileSyncService {
     private final BrowseDirectoryRepository browseDirectoryRepository;
     private final AlistEngineService engineService;
     private final TransactionTemplate txTemplate;
-    private final ThumbnailCacheService thumbnailCacheService;
     private final AppConfig appConfig;
 
     /** 防止同一浏览目录并发同步 */
     private final ConcurrentHashMap<Long, Boolean> syncingIds = new ConcurrentHashMap<>();
 
-    /**
-     * 全局同步串行：多目录定时/手动同时跑时，避免 SQLite 与图片缓存写互相卡住
-     * （真正耗时的下载在 ThumbnailCacheService 内已有分片锁 + 并发上限）
-     */
+    /** 全局同步串行：多目录定时/手动同时跑时，避免 SQLite 写冲突 */
     private final Object syncGlobalLock = new Object();
 
     /**
@@ -231,7 +229,7 @@ public class DirFileSyncService {
         log.info("同步目录: engineId={}, path={}", engineId, path);
         List<FileItem> items;
         try {
-            items = client.listFiles(path, true, ALIST_LIST_PAGE, ALIST_LIST_PER_PAGE);
+            items = client.listAllFiles(path, true, ALIST_LIST_PER_PAGE);
         } catch (Exception e) {
             log.error("获取目录列表失败: engineId={}, path={}", engineId, path, e);
             return null;
@@ -239,9 +237,7 @@ public class DirFileSyncService {
         log.info("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
 
         Long directoryId = persistDirListing(engineId, path, parentId, items);
-        // 为图片文件生成列表缩略图并写回 dir_file.thumbnail_url
-        cacheFileThumbnails(engineId, directoryId, items, client);
-        // 本层有图则立刻写入目录预览，刷新页面也能看到（不必等整棵子树同步完）
+        // 列表/目录预览直接用原图代理，不生成缩略图
         String dirThumbnail = resolveDirThumbnail(engineId, path, items, client);
         if (dirThumbnail != null) {
             updateThumbnail(engineId, path, dirThumbnail);
@@ -269,17 +265,28 @@ public class DirFileSyncService {
             directory.setName(PathUtils.nameOf(path));
             directory = fileDirectoryRepository.save(directory);
 
-            dirFileRepository.deleteByDirectoryId(directory.getId());
+            // 增量同步：文件系统有而库无则入库；库有而文件系统无则删除
+            List<DirFile> existingFiles = dirFileRepository.findByDirectoryId(directory.getId());
+            Map<String, DirFile> existingByName = new HashMap<>();
+            for (DirFile df : existingFiles) {
+                if (df.getName() != null) {
+                    existingByName.put(df.getName(), df);
+                }
+            }
 
+            Set<String> currentFileNames = new HashSet<>();
+            Set<String> currentDirPaths = new HashSet<>();
             List<DirFile> filesToSave = new ArrayList<>();
             List<FileDirectory> dirsToSave = new ArrayList<>();
-            Set<String> currentDirPaths = new HashSet<>();
+            int inserted = 0;
+            int updated = 0;
+
             for (FileItem item : items) {
                 if (shouldSkipItem(item)) {
                     continue;
                 }
                 if (Boolean.TRUE.equals(item.getIsDir())) {
-                    currentDirPaths.add(item.getPath());
+                    currentDirPaths.add(PathUtils.normalize(item.getPath()));
                     FileDirectory subDir = fileDirectoryRepository.findByEngineIdAndPath(engineId, item.getPath())
                             .orElseGet(FileDirectory::new);
                     subDir.setEngineId(engineId);
@@ -289,67 +296,47 @@ public class DirFileSyncService {
                     subDir.setModifiedTime(item.getModified());
                     dirsToSave.add(subDir);
                 } else {
-                    DirFile df = new DirFile();
-                    df.setEngineId(engineId);
-                    df.setDirectoryId(directory.getId());
-                    df.setParentPath(path);
-                    df.setName(item.getName());
-                    df.setIsDir(false);
+                    currentFileNames.add(item.getName());
+                    DirFile df = existingByName.get(item.getName());
+                    if (df == null) {
+                        df = new DirFile();
+                        df.setEngineId(engineId);
+                        df.setDirectoryId(directory.getId());
+                        df.setParentPath(path);
+                        df.setName(item.getName());
+                        df.setIsDir(false);
+                        inserted++;
+                    } else {
+                        updated++;
+                    }
                     df.setSize(item.getSize());
                     df.setExt(item.getExt());
                     df.setModifiedTime(item.getModified());
+                    df.setSyncTime(LocalDateTime.now());
                     filesToSave.add(df);
                 }
             }
+
+            // 删除库中有、文件系统没有的文件
+            List<DirFile> toDelete = new ArrayList<>();
+            for (DirFile df : existingFiles) {
+                if (df.getName() == null || !currentFileNames.contains(df.getName())) {
+                    toDelete.add(df);
+                }
+            }
+            if (!toDelete.isEmpty()) {
+                dirFileRepository.deleteAll(toDelete);
+            }
+
             deleteMissingChildDirs(engineId, directory.getId(), currentDirPaths);
             fileDirectoryRepository.saveAll(dirsToSave);
             dirFileRepository.saveAll(filesToSave);
-            log.info("目录数据已保存: engineId={}, path={}, dirs={}, files={}",
-                    engineId, path, dirsToSave.size(), filesToSave.size());
+            log.info("目录内容已同步: engineId={}, path={}, dirs={}, files(+{}/~{}/-{}), totalFiles={}",
+                    engineId, path, dirsToSave.size(),
+                    inserted, updated, toDelete.size(), filesToSave.size());
             return directory.getId();
         });
     }
-
-    /**
-     * 同步当前目录下图片文件的列表缩略图，写入 dir_file.thumbnail_url
-     * <p>
-     * 磁盘写入在事务外完成；库表批量一次提交，避免「每张图一个事务」导致 SQLite 锁等待/假死。
-     */
-    private void cacheFileThumbnails(Long engineId, Long directoryId, List<FileItem> items, AlistClient client) {
-        if (directoryId == null || items == null || items.isEmpty()) {
-            return;
-        }
-        // name -> thumbUrl
-        java.util.Map<String, String> thumbByName = new java.util.LinkedHashMap<>();
-        for (FileItem item : items) {
-            if (shouldSkipItem(item) || Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
-                continue;
-            }
-            try {
-                String thumbUrl = thumbnailCacheService.cacheThumbnail(engineId, item.getPath(), client);
-                if (thumbUrl == null) {
-                    continue;
-                }
-                item.setThumbnailUrl(thumbUrl);
-                thumbByName.put(item.getName(), thumbUrl);
-            } catch (Exception e) {
-                log.warn("图片缩略图同步失败: engineId={}, path={}, err={}", engineId, item.getPath(), e.getMessage());
-            }
-        }
-        if (thumbByName.isEmpty()) {
-            return;
-        }
-        txTemplate.executeWithoutResult(status -> {
-            for (java.util.Map.Entry<String, String> e : thumbByName.entrySet()) {
-                DirFile df = dirFileRepository.findByDirectoryIdAndName(directoryId, e.getKey());
-                if (df != null) {
-                    df.setThumbnailUrl(e.getValue());
-                    dirFileRepository.save(df);
-                }
-            }
-        });
-    }
-
     /**
      * 是否跳过入库/同步（点目录、配置的忽略后缀）
      */
@@ -363,20 +350,12 @@ public class DirFileSyncService {
         return appConfig.shouldIgnoreFileName(item.getName());
     }
 
+    /** 目录预览：本层第一张图片的原图代理 URL */
     private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
-        // 优先复用本层已生成的文件缩略图；缓存繁忙时仍回退 proxy，保证预览可用
         for (FileItem item : items) {
             if (shouldSkipItem(item) || Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
                 continue;
             }
-            if (item.getThumbnailUrl() != null && !item.getThumbnailUrl().isEmpty()) {
-                return item.getThumbnailUrl();
-            }
-            String cachedUrl = thumbnailCacheService.cacheThumbnail(engineId, item.getPath(), client);
-            if (cachedUrl != null) {
-                return cachedUrl;
-            }
-            // 写缓存失败/超时：用代理原图做目录预览，避免刷新后空白
             return MediaTypes.proxyUrl(engineId, item.getPath());
         }
         return null;
@@ -408,21 +387,84 @@ public class DirFileSyncService {
                 }));
     }
 
+    /**
+     * 删除父目录下：数据库有、文件系统已不存在的子目录（含子树文件与目录）
+     */
     private void deleteMissingChildDirs(Long engineId, Long parentId, Set<String> currentDirPaths) {
+        if (parentId == null) {
+            return;
+        }
         List<FileDirectory> existingDirs = fileDirectoryRepository.findByEngineIdAndParentId(engineId, parentId);
+        if (existingDirs == null || existingDirs.isEmpty()) {
+            return;
+        }
+        Set<String> livePaths = new HashSet<>();
+        if (currentDirPaths != null) {
+            for (String p : currentDirPaths) {
+                if (p != null && !p.isBlank()) {
+                    livePaths.add(PathUtils.normalize(p));
+                }
+            }
+        }
+        List<FileDirectory> missing = new ArrayList<>();
         for (FileDirectory existingDir : existingDirs) {
-            if (currentDirPaths.contains(existingDir.getPath())) {
+            String dbPath = PathUtils.normalize(existingDir.getPath());
+            if (livePaths.contains(dbPath)) {
                 continue;
             }
-            List<Long> subtreeIds = new ArrayList<>();
-            subtreeIds.add(existingDir.getId());
-            subtreeIds.addAll(fileDirectoryRepository
-                    .findByEngineIdAndPathStartingWith(engineId, existingDir.getPath() + "/")
-                    .stream()
-                    .map(FileDirectory::getId)
-                    .toList());
-            dirFileRepository.deleteByDirectoryIdIn(subtreeIds);
-            fileDirectoryRepository.deleteAllById(subtreeIds);
+            missing.add(existingDir);
+        }
+        if (missing.isEmpty()) {
+            return;
+        }
+        for (FileDirectory missingDir : missing) {
+            deleteDirectorySubtree(engineId, missingDir);
+        }
+        log.info("已删除文件系统中不存在的子目录: engineId={}, parentId={}, count={}, paths={}",
+                engineId, parentId, missing.size(),
+                missing.stream().map(FileDirectory::getPath).toList());
+    }
+
+    /**
+     * 递归删除目录节点及其全部子孙目录、文件记录
+     */
+    private void deleteDirectorySubtree(Long engineId, FileDirectory root) {
+        if (root == null || root.getId() == null) {
+            return;
+        }
+        String rootPath = PathUtils.normalize(root.getPath());
+        List<Long> subtreeIds = new ArrayList<>();
+        subtreeIds.add(root.getId());
+        // 子孙目录：path 以 rootPath + "/" 开头
+        String prefix = rootPath.endsWith("/") ? rootPath : rootPath + "/";
+        List<FileDirectory> descendants = fileDirectoryRepository
+                .findByEngineIdAndPathStartingWith(engineId, prefix);
+        for (FileDirectory d : descendants) {
+            if (d.getId() != null && !d.getId().equals(root.getId())) {
+                subtreeIds.add(d.getId());
+            }
+        }
+        // 也按 parent 链再扫一层，防止 path 前缀不一致漏删
+        collectChildDirectoryIds(engineId, root.getId(), subtreeIds);
+
+        dirFileRepository.deleteByDirectoryIdIn(subtreeIds);
+        fileDirectoryRepository.deleteAllById(subtreeIds);
+        log.debug("删除目录子树: engineId={}, path={}, nodes={}", engineId, rootPath, subtreeIds.size());
+    }
+
+    private void collectChildDirectoryIds(Long engineId, Long parentId, List<Long> out) {
+        List<FileDirectory> children = fileDirectoryRepository.findByEngineIdAndParentId(engineId, parentId);
+        if (children == null || children.isEmpty()) {
+            return;
+        }
+        for (FileDirectory child : children) {
+            if (child.getId() == null) {
+                continue;
+            }
+            if (!out.contains(child.getId())) {
+                out.add(child.getId());
+                collectChildDirectoryIds(engineId, child.getId(), out);
+            }
         }
     }
 }
