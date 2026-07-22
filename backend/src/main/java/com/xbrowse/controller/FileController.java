@@ -108,8 +108,9 @@ public class FileController {
     public ApiResponse<List<FileItem>> searchFiles(
             @RequestParam Long engineId,
             @RequestParam String keyword,
-            @RequestParam(defaultValue = "/") String parentPath) {
-        return ApiResponse.success(fileBrowseService.searchFiles(engineId, parentPath, keyword));
+            @RequestParam(defaultValue = "/") String parentPath,
+            @RequestParam(defaultValue = "all") String mediaType) {
+        return ApiResponse.success(fileBrowseService.searchFiles(engineId, parentPath, keyword, mediaType));
     }
 
     /**
@@ -134,8 +135,10 @@ public class FileController {
             @RequestParam(defaultValue = "false") boolean refresh,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int perPage,
-            @RequestParam(defaultValue = "name_asc") String sort) {
-        return ApiResponse.success(fileBrowseService.listFiles(engineId, path, refresh, page, perPage, sort));
+            @RequestParam(defaultValue = "name_asc") String sort,
+            @RequestParam(defaultValue = "all") String mediaType) {
+        return ApiResponse.success(
+                fileBrowseService.listFiles(engineId, path, refresh, page, perPage, sort, mediaType));
     }
 
     /**

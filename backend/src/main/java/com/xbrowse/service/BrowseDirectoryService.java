@@ -102,10 +102,22 @@ public class BrowseDirectoryService {
         }
         directory.setName(dto.getName());
         directory.setThumbnailEnabled(dto.getThumbnailEnabled() == null || dto.getThumbnailEnabled());
+        directory.setMediaType(normalizeMediaType(dto.getMediaType()));
         directory.setSyncMode(dto.getSyncMode());
         directory.setSyncIntervalValue(dto.getSyncIntervalValue());
         directory.setSyncIntervalUnit(dto.getSyncIntervalUnit());
         directory.setSyncCron(dto.getSyncCron());
+    }
+
+    private String normalizeMediaType(String mediaType) {
+        if (mediaType == null || mediaType.isBlank()) {
+            return BrowseDirectory.MEDIA_TYPE_ALL;
+        }
+        String t = mediaType.trim().toLowerCase();
+        if (BrowseDirectory.MEDIA_TYPE_IMAGE.equals(t) || BrowseDirectory.MEDIA_TYPE_VIDEO.equals(t)) {
+            return t;
+        }
+        return BrowseDirectory.MEDIA_TYPE_ALL;
     }
 
     private BrowseDirectoryDTO toDTO(BrowseDirectory directory) {
@@ -115,6 +127,7 @@ public class BrowseDirectoryService {
         dto.setPath(directory.getPath());
         dto.setName(directory.getName());
         dto.setThumbnailEnabled(directory.getThumbnailEnabled());
+        dto.setMediaType(normalizeMediaType(directory.getMediaType()));
         dto.setSyncMode(directory.getSyncMode() != null ? directory.getSyncMode() : BrowseDirectory.SYNC_MODE_INTERVAL);
         dto.setSyncIntervalValue(directory.getSyncIntervalValue() != null ? directory.getSyncIntervalValue() : 5);
         dto.setSyncIntervalUnit(directory.getSyncIntervalUnit() != null

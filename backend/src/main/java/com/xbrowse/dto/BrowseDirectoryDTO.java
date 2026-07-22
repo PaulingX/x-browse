@@ -25,6 +25,9 @@ public class BrowseDirectoryDTO {
 
     private Boolean thumbnailEnabled = true;
 
+    /** 浏览类型：all / image / video */
+    private String mediaType = "all";
+
     /** 同步模式：NONE / INTERVAL / CRON */
     private String syncMode = "INTERVAL";
 
@@ -53,6 +56,8 @@ public class BrowseDirectoryDTO {
     public void setName(String name) { this.name = name; }
     public Boolean getThumbnailEnabled() { return thumbnailEnabled; }
     public void setThumbnailEnabled(Boolean thumbnailEnabled) { this.thumbnailEnabled = thumbnailEnabled; }
+    public String getMediaType() { return mediaType; }
+    public void setMediaType(String mediaType) { this.mediaType = mediaType; }
     public String getSyncMode() { return syncMode; }
     public void setSyncMode(String syncMode) { this.syncMode = syncMode; }
     public Integer getSyncIntervalValue() { return syncIntervalValue; }

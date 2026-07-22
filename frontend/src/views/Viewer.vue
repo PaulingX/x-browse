@@ -162,6 +162,7 @@ const viewerPage = ref(null)
 const engineId = computed(() => Number(route.params.engineId))
 const currentPath = ref(route.query.path || '/')
 const targetFile = ref(route.query.file || '')
+const mediaType = ref(route.query.mediaType || 'all')
 const currentIndex = ref(Number(route.query.index) || 0)
 
 const files = ref([])
@@ -501,10 +502,22 @@ async function loadFiles() {
     let hasMore = true
     while (hasMore) {
       const res = await api.get('/api/files/list', {
-        params: { engineId: engineId.value, path: currentPath.value, page, perPage: 100 }
+        params: {
+          engineId: engineId.value,
+          path: currentPath.value,
+          page,
+          perPage: 100,
+          mediaType: mediaType.value || 'all'
+        }
       })
       if (res.code === 200) {
-        allFiles.push(...res.data.filter((f) => !f.isDir && (isImageExt(f.ext) || isVideoExt(f.ext))))
+        const media = res.data.filter((f) => {
+          if (f.isDir) return false
+          if (mediaType.value === 'image') return isImageExt(f.ext)
+          if (mediaType.value === 'video') return isVideoExt(f.ext)
+          return isImageExt(f.ext) || isVideoExt(f.ext)
+        })
+        allFiles.push(...media)
         hasMore = res.data.length >= 100
         page++
       } else {

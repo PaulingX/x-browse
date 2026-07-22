@@ -155,9 +155,15 @@ const router = useRouter()
 const route = useRoute()
 
 const engineId = computed(() => Number(route.params.engineId))
+const mediaTypeKey = computed(() => `xbrowse_media_${engineId.value}`)
 const storageKey = computed(() => `xbrowse_root_${engineId.value}`)
 const rootPath = ref(sessionStorage.getItem(storageKey.value) || route.query.path || '/')
 const currentPath = ref(route.query.path || '/')
+const mediaType = ref(
+  route.query.mediaType
+  || sessionStorage.getItem(mediaTypeKey.value)
+  || 'all'
+)
 
 const files = ref([])
 const loading = ref(true)
@@ -175,6 +181,14 @@ const sentinelRef = ref(null)
 const showBackButton = ref(false)
 const sortMode = ref(localStorage.getItem('xbrowse_sort') || 'name_asc')
 const isRoot = computed(() => currentPath.value === rootPath.value)
+
+function browseQuery(extra = {}) {
+  return {
+    path: currentPath.value,
+    mediaType: mediaType.value || 'all',
+    ...extra
+  }
+}
 let searchTimer = null
 let dirObserver = null
 let dirObserverTimer = null
@@ -281,11 +295,11 @@ function handleClick(item) {
     showBackButton.value = true
     searchText.value = ''
     searchResults.value = []
-    router.push({ query: { path: item.path } })
+    router.push({ query: browseQuery({ path: item.path }) })
     loadFiles()
     window.scrollTo(0, 0)
   } else if (isImage(item.ext) || isVideo(item.ext)) {
-    // 与 Viewer 使用同一套媒体列表（图+视频），用文件名定位，避免 index 错位
+    // 与 Viewer 使用同一套媒体列表，用文件名定位，避免 index 错位
     openViewer(item)
   }
 }
@@ -296,7 +310,8 @@ function openViewer(item) {
     params: { engineId: engineId.value },
     query: {
       path: currentPath.value,
-      file: item.name
+      file: item.name,
+      mediaType: mediaType.value || 'all'
     }
   })
 }
@@ -307,7 +322,8 @@ function buildListParams(path, targetPage) {
     path,
     page: targetPage,
     perPage: perPage.value,
-    sort: path === rootPath.value ? sortMode.value : 'name_asc'
+    sort: path === rootPath.value ? sortMode.value : 'name_asc',
+    mediaType: mediaType.value || 'all'
   }
 }
 
@@ -323,7 +339,7 @@ async function restorePath(path, { showBack = false, preload = false } = {}) {
   showBackButton.value = showBack
   searchText.value = ''
   searchResults.value = []
-  router.replace({ query: { path } })
+  router.replace({ query: browseQuery({ path }) })
 
   const cached = scrollPositions.get(path)
   page.value = cached ? cached.page : 1
@@ -369,6 +385,10 @@ function refresh() {
 }
 
 function toggleViewMode() {
+  if (mediaType.value === 'video') {
+    viewMode.value = 'grid'
+    return
+  }
   viewMode.value = viewMode.value === 'grid' ? 'waterfall' : 'grid'
 }
 
@@ -660,7 +680,12 @@ async function doSearch(keyword) {
   searching.value = true
   try {
     const res = await api.get('/api/files/search', {
-      params: { engineId: engineId.value, keyword, parentPath: currentPath.value }
+      params: {
+        engineId: engineId.value,
+        keyword,
+        parentPath: currentPath.value,
+        mediaType: mediaType.value || 'all'
+      }
     })
     if (res.code === 200) {
       searchResults.value = res.data
@@ -687,6 +712,10 @@ watch(
 onMounted(() => {
   loadScrollPositions()
   sessionStorage.setItem(storageKey.value, rootPath.value)
+  sessionStorage.setItem(mediaTypeKey.value, mediaType.value || 'all')
+  if (mediaType.value === 'video' && viewMode.value === 'waterfall') {
+    viewMode.value = 'grid'
+  }
   if (currentPath.value !== rootPath.value) {
     showBackButton.value = true
   }

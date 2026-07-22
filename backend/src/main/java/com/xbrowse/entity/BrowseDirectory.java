@@ -25,6 +25,13 @@ public class BrowseDirectory {
     public static final String INTERVAL_DAY = "DAY";
     public static final String INTERVAL_MONTH = "MONTH";
 
+    /** 综合：展示全部（除忽略文件） */
+    public static final String MEDIA_TYPE_ALL = "all";
+    /** 仅图片 */
+    public static final String MEDIA_TYPE_IMAGE = "image";
+    /** 仅视频（同名图片作封面后不单独列出） */
+    public static final String MEDIA_TYPE_VIDEO = "video";
+
     @Id
     @GeneratedValue(generator = "sqlite-id")
     @GenericGenerator(name = "sqlite-id", type = com.xbrowse.config.SQLiteIdGenerator.class)
@@ -41,6 +48,12 @@ public class BrowseDirectory {
 
     @Column(name = "thumbnail_enabled")
     private Boolean thumbnailEnabled = true;
+
+    /**
+     * 浏览类型：all 综合 / image 图片 / video 视频
+     */
+    @Column(name = "media_type", length = 20)
+    private String mediaType = MEDIA_TYPE_ALL;
 
     /** 同步模式：NONE / INTERVAL / CRON */
     @Column(name = "sync_mode", length = 20)
@@ -85,6 +98,9 @@ public class BrowseDirectory {
         if (syncIntervalUnit == null || syncIntervalUnit.isBlank()) {
             syncIntervalUnit = INTERVAL_MINUTE;
         }
+        if (mediaType == null || mediaType.isBlank()) {
+            mediaType = MEDIA_TYPE_ALL;
+        }
     }
 
     @PreUpdate
@@ -102,6 +118,8 @@ public class BrowseDirectory {
     public void setName(String name) { this.name = name; }
     public Boolean getThumbnailEnabled() { return thumbnailEnabled; }
     public void setThumbnailEnabled(Boolean thumbnailEnabled) { this.thumbnailEnabled = thumbnailEnabled; }
+    public String getMediaType() { return mediaType; }
+    public void setMediaType(String mediaType) { this.mediaType = mediaType; }
     public String getSyncMode() { return syncMode; }
     public void setSyncMode(String syncMode) { this.syncMode = syncMode; }
     public Integer getSyncIntervalValue() { return syncIntervalValue; }

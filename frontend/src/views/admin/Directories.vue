@@ -20,6 +20,7 @@
           <div class="dir-info">
             <span>{{ getEngineName(dir.engineId) }} - {{ dir.path }}</span>
             <div class="dir-tags">
+              <van-tag :type="mediaTypeTagType(dir.mediaType)" size="small">{{ mediaTypeLabel(dir.mediaType) }}</van-tag>
               <van-tag v-if="dir.thumbnailEnabled" type="primary" size="small">缩略图</van-tag>
               <van-tag :type="dir.syncMode === 'NONE' ? 'default' : 'success'" size="small">
                 {{ dir.syncDesc || getSyncDesc(dir) }}
@@ -91,6 +92,21 @@
             <van-field label="缩略图">
               <template #input>
                 <van-switch v-model="form.thumbnailEnabled" size="20" />
+              </template>
+            </van-field>
+            <van-field label="浏览类型">
+              <template #input>
+                <div class="media-type-tabs">
+                  <span
+                    v-for="opt in mediaTypeOptions"
+                    :key="opt.value"
+                    class="media-type-tab"
+                    :class="{ active: form.mediaType === opt.value }"
+                    @click="form.mediaType = opt.value"
+                  >
+                    {{ opt.label }}
+                  </span>
+                </div>
               </template>
             </van-field>
             <div class="sync-card">
@@ -232,11 +248,18 @@ const intervalUnits = [
   { label: '月', value: 'MONTH' }
 ]
 
+const mediaTypeOptions = [
+  { value: 'all', label: '综合' },
+  { value: 'image', label: '图片' },
+  { value: 'video', label: '视频' }
+]
+
 const form = ref({
   engineId: null,
   path: '',
   name: '',
   thumbnailEnabled: true,
+  mediaType: 'all',
   syncMode: 'INTERVAL',
   syncIntervalValue: 5,
   syncIntervalUnit: 'MINUTE',
@@ -272,11 +295,23 @@ function defaultForm() {
     path: '',
     name: '',
     thumbnailEnabled: true,
+    mediaType: 'all',
     syncMode: 'INTERVAL',
     syncIntervalValue: 5,
     syncIntervalUnit: 'MINUTE',
     syncCron: ''
   }
+}
+
+function mediaTypeLabel(type) {
+  const map = { all: '综合', image: '图片', video: '视频' }
+  return map[type] || '综合'
+}
+
+function mediaTypeTagType(type) {
+  if (type === 'image') return 'success'
+  if (type === 'video') return 'warning'
+  return 'default'
 }
 
 function getEngineName(engineId) {
@@ -404,6 +439,7 @@ function editDir(dir) {
     path: dir.path,
     name: dir.name || '',
     thumbnailEnabled: dir.thumbnailEnabled,
+    mediaType: dir.mediaType || 'all',
     syncMode: dir.syncMode || 'INTERVAL',
     syncIntervalValue: dir.syncIntervalValue || 5,
     syncIntervalUnit: dir.syncIntervalUnit || 'MINUTE',
@@ -500,6 +536,30 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.media-type-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.media-type-tab {
+  padding: 4px 12px;
+  font-size: 13px;
+  color: #646566;
+  background: #f7f8fa;
+  border: 1px solid #ebedf0;
+  border-radius: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.media-type-tab.active {
+  color: #1989fa;
+  border-color: #1989fa;
+  background: rgba(25, 137, 250, 0.08);
+  font-weight: 500;
 }
 
 .sync-time {

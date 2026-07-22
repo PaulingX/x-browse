@@ -37,15 +37,17 @@ public class FileBrowseService {
     /**
      * 浏览目录
      *
-     * @param refresh  true 强制直连 Alist；false 优先本地库
-     * @param sortMode 排序：name_asc / name_desc / time_asc / time_desc
+     * @param refresh   true 强制直连 Alist；false 优先本地库
+     * @param sortMode  排序：name_asc / name_desc / time_asc / time_desc
+     * @param mediaType 展示类型：all 综合 / image 仅图片 / video 仅视频（同名图作封面后不单独列出）
      */
-    public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage, String sortMode) {
+    public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage,
+                                    String sortMode, String mediaType) {
         path = PathUtils.normalize(path);
         page = Math.max(page, 1);
         perPage = Math.max(perPage, 1);
-        log.debug("查询目录: engineId={}, path={}, refresh={}, page={}, perPage={}, sort={}",
-                engineId, path, refresh, page, perPage, sortMode);
+        log.debug("查询目录: engineId={}, path={}, refresh={}, page={}, perPage={}, sort={}, mediaType={}",
+                engineId, path, refresh, page, perPage, sortMode, mediaType);
 
         List<FileItem> items;
         if (!refresh) {
@@ -61,13 +63,14 @@ public class FileBrowseService {
         }
         // 分页前关联同名封面，避免封面图与视频不在同一页时丢失
         applyVideoCoverThumbnails(engineId, items);
+        items = filterByMediaType(items, mediaType);
         return paginate(sortItems(items, sortMode), page, perPage);
     }
 
     /**
      * 在指定父路径下按名称模糊搜索（仅本地库）
      */
-    public List<FileItem> searchFiles(Long engineId, String parentPath, String keyword) {
+    public List<FileItem> searchFiles(Long engineId, String parentPath, String keyword, String mediaType) {
         parentPath = PathUtils.normalize(parentPath);
         Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, parentPath);
         if (directoryOpt.isEmpty()) {
@@ -82,7 +85,34 @@ public class FileBrowseService {
                 .map(df -> toFileItem(df, engineId))
                 .toList());
         applyVideoCoverThumbnails(engineId, items);
-        return sortItems(items, "name_asc");
+        return sortItems(filterByMediaType(items, mediaType), "name_asc");
+    }
+
+    /**
+     * 按浏览类型过滤：目录始终保留；image 仅图片；video 仅视频（封面已挂到视频上）
+     */
+    private List<FileItem> filterByMediaType(List<FileItem> items, String mediaType) {
+        if (items == null || items.isEmpty()) {
+            return items == null ? List.of() : items;
+        }
+        String type = mediaType == null ? "all" : mediaType.trim().toLowerCase();
+        if (type.isEmpty() || "all".equals(type) || "mixed".equals(type)) {
+            return items;
+        }
+        List<FileItem> filtered = new ArrayList<>(items.size());
+        for (FileItem item : items) {
+            if (Boolean.TRUE.equals(item.getIsDir())) {
+                filtered.add(item);
+                continue;
+            }
+            String name = item.getName();
+            if ("image".equals(type) && MediaTypes.isImage(name)) {
+                filtered.add(item);
+            } else if ("video".equals(type) && MediaTypes.isVideo(name)) {
+                filtered.add(item);
+            }
+        }
+        return filtered;
     }
 
     /**
