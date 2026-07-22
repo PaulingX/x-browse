@@ -57,6 +57,10 @@
         class="video-player"
         @loadedmetadata="onVideoLoaded"
         @timeupdate="onTimeUpdate"
+        @play="isPlaying = true"
+        @pause="isPlaying = false"
+        @ended="isPlaying = false"
+        @volumechange="onVolumeChange"
         @error="onVideoError"
         @click="togglePlay"
         @dblclick="toggleFullscreen"
@@ -79,8 +83,40 @@
           <!-- 控制按钮行 -->
           <div class="controls-row">
             <div class="controls-left">
-              <span class="ctrl-btn" @click="togglePlay">
-                <van-icon :name="isPlaying ? 'pause' : 'play'" size="20" color="white" />
+              <span class="ctrl-btn" @click="togglePlay" :title="isPlaying ? '暂停' : '播放'">
+                <svg v-if="isPlaying" class="play-icon" viewBox="0 0 24 24" width="22" height="22" fill="white" aria-hidden="true">
+                  <rect x="5" y="4" width="5" height="16" rx="1.2" />
+                  <rect x="14" y="4" width="5" height="16" rx="1.2" />
+                </svg>
+                <svg v-else class="play-icon" viewBox="0 0 24 24" width="22" height="22" fill="white" aria-hidden="true">
+                  <path d="M7 4.5v15l12.5-7.5L7 4.5z" />
+                </svg>
+              </span>
+              <span class="volume-control">
+                <span class="ctrl-btn" @click="toggleMute" :title="isMuted || volume === 0 ? '取消静音' : '静音'">
+                  <svg v-if="isMuted || volume === 0" viewBox="0 0 24 24" width="18" height="18" fill="white" aria-hidden="true">
+                    <path d="M4.5 9v6h3.5l4.5 3.5V5.5L8 9H4.5z" />
+                    <path d="M16.5 9.5l4 4m0-4l-4 4" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none" />
+                  </svg>
+                  <svg v-else-if="volume < 0.5" viewBox="0 0 24 24" width="18" height="18" fill="white" aria-hidden="true">
+                    <path d="M4.5 9v6h3.5l4.5 3.5V5.5L8 9H4.5z" />
+                    <path d="M15.2 9.8a3.2 3.2 0 010 4.4" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="white" aria-hidden="true">
+                    <path d="M4.5 9v6h3.5l4.5 3.5V5.5L8 9H4.5z" />
+                    <path d="M15.2 9.8a3.2 3.2 0 010 4.4M17.5 7.5a6 6 0 010 9" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none" />
+                  </svg>
+                </span>
+                <input
+                  class="volume-slider"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  :value="isMuted ? 0 : volume"
+                  @input="onVolumeInput"
+                  title="音量"
+                />
               </span>
               <span class="time-display">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</span>
             </div>
@@ -149,6 +185,9 @@ const duration = ref(0)
 const bufferedPercent = ref(0)
 const isFullscreen = ref(false)
 const seekPreview = ref({ visible: false, left: 0, time: '' })
+const volume = ref(Number(localStorage.getItem('xbrowse_video_volume') ?? 1))
+const isMuted = ref(localStorage.getItem('xbrowse_video_muted') === '1')
+let volumeBeforeMute = volume.value > 0 ? volume.value : 1
 
 const currentFile = computed(() => files.value[currentIndex.value])
 const isImage = computed(() => currentFile.value && isImageExt(currentFile.value.ext))
@@ -184,7 +223,45 @@ function onVideoLoaded() {
   if (videoRef.value) {
     videoRef.value.playbackRate = playbackSpeed.value
     duration.value = videoRef.value.duration || 0
+    applyVolume()
+    isPlaying.value = !videoRef.value.paused
   }
+}
+
+function applyVolume() {
+  if (!videoRef.value) return
+  videoRef.value.volume = volume.value
+  videoRef.value.muted = isMuted.value || volume.value === 0
+}
+
+function onVolumeChange() {
+  if (!videoRef.value) return
+  volume.value = videoRef.value.volume
+  isMuted.value = videoRef.value.muted || videoRef.value.volume === 0
+}
+
+function onVolumeInput(e) {
+  const v = Number(e.target.value)
+  volume.value = v
+  isMuted.value = v === 0
+  if (v > 0) volumeBeforeMute = v
+  localStorage.setItem('xbrowse_video_volume', String(v))
+  localStorage.setItem('xbrowse_video_muted', isMuted.value ? '1' : '0')
+  applyVolume()
+}
+
+function toggleMute() {
+  if (!videoRef.value) return
+  if (isMuted.value || volume.value === 0) {
+    isMuted.value = false
+    volume.value = volumeBeforeMute > 0 ? volumeBeforeMute : 1
+  } else {
+    volumeBeforeMute = volume.value > 0 ? volume.value : 1
+    isMuted.value = true
+  }
+  localStorage.setItem('xbrowse_video_volume', String(volume.value))
+  localStorage.setItem('xbrowse_video_muted', isMuted.value ? '1' : '0')
+  applyVolume()
 }
 
 function onTimeUpdate() {
@@ -382,7 +459,7 @@ function handleKeydown(e) {
         break
       case 'm':
         e.preventDefault()
-        if (videoRef.value) videoRef.value.muted = !videoRef.value.muted
+        toggleMute()
         break
     }
     return
@@ -611,11 +688,24 @@ onUnmounted(() => {
 .ctrl-btn {
   display: flex; align-items: center; justify-content: center;
   width: 32px; height: 32px; cursor: pointer; border-radius: 4px;
-  transition: background 0.2s;
+  transition: background 0.2s; flex-shrink: 0;
 }
 .ctrl-btn:hover { background: rgba(255,255,255,0.15); }
 .ctrl-btn.disabled { opacity: 0.3; pointer-events: none; }
+.play-icon { display: block; }
 .video-pos-label { color: rgba(255,255,255,0.7); font-size: 12px; }
+.volume-control {
+  display: flex; align-items: center; gap: 2px;
+}
+.volume-slider {
+  width: 0; opacity: 0; pointer-events: none;
+  height: 4px; margin: 0; cursor: pointer;
+  accent-color: #1989fa; transition: width 0.2s, opacity 0.2s;
+}
+.volume-control:hover .volume-slider,
+.volume-slider:focus {
+  width: 72px; opacity: 1; pointer-events: auto;
+}
 
 .speed-chip {
   padding: 2px 8px; border-radius: 10px; font-size: 11px;
@@ -669,5 +759,6 @@ onUnmounted(() => {
   .viewer-title { font-size: 14px; }
   .controls-center { display: none; }
   .speed-chip { padding: 2px 6px; font-size: 10px; }
+  .volume-slider { width: 56px; opacity: 1; pointer-events: auto; }
 }
 </style>
