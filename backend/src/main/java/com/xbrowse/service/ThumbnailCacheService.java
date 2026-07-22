@@ -4,10 +4,18 @@ import com.xbrowse.util.AlistClient;
 import com.xbrowse.util.MediaTypes;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
-import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -18,13 +26,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.util.Iterator;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
  * 列表缩略图本地缓存服务
  * <p>
- * 同步时生成列表用小图：{cacheDir}/thumbnails/{engineId}/{pathHash}.jpg
+ * 同步时生成列表用 WebP 小图：{cacheDir}/thumbnails/{engineId}/{pathHash}.webp
  * 原图不落盘，仅通过 /api/files/proxy 代理访问。
  */
 @Slf4j
@@ -32,7 +41,8 @@ import java.util.concurrent.TimeUnit;
 public class ThumbnailCacheService {
 
     private static final String THUMBNAILS_DIR = "thumbnails";
-    private static final double JPEG_QUALITY = 0.72;
+    private static final String THUMB_EXT = ".webp";
+    private static final float WEBP_QUALITY = 0.75f;
     private static final int DOWNLOAD_READ_TIMEOUT_MS = 60_000;
     private static final int MAX_CACHE_WRITERS = 2;
     private static final long LOCK_WAIT_MS = 30_000L;
@@ -58,24 +68,33 @@ public class ThumbnailCacheService {
 
     @PostConstruct
     public void init() {
+        ImageIO.scanForPlugins();
         try {
             Files.createDirectories(Paths.get(cacheDir, THUMBNAILS_DIR));
             log.info("缩略图缓存目录初始化完成: {}", Paths.get(cacheDir, THUMBNAILS_DIR).toAbsolutePath());
+            boolean hasWebp = false;
+            for (String f : ImageIO.getWriterFormatNames()) {
+                if ("webp".equalsIgnoreCase(f)) {
+                    hasWebp = true;
+                    break;
+                }
+            }
+            if (!hasWebp) {
+                log.warn("ImageIO 未注册 WebP 写出器，请确认 webp-imageio 依赖已打包");
+            }
         } catch (IOException e) {
             log.error("创建缩略图缓存目录失败: {}", cacheDir, e);
         }
     }
 
     /**
-     * 缓存列表缩略图（最大边 maxThumbWidth）
-     * <p>
-     * 压缩失败时回退保存原图作为缓存文件，仍返回 thumbnail URL。
+     * 缓存列表缩略图（WebP，最大边 maxThumbWidth）
      */
     public String cacheThumbnail(Long engineId, String imagePath, AlistClient client) {
         if (!thumbnailEnabled || engineId == null || imagePath == null) {
             return null;
         }
-        String cacheFileName = md5(imagePath) + ".jpg";
+        String cacheFileName = md5(imagePath) + THUMB_EXT;
         Path cachePath = Paths.get(cacheDir, THUMBNAILS_DIR, String.valueOf(engineId), cacheFileName);
         String url = buildThumbnailUrl(engineId, cacheFileName);
         if (Files.exists(cachePath) && isNonEmptyFile(cachePath)) {
@@ -136,11 +155,6 @@ public class ThumbnailCacheService {
         return "/api/files/thumbnail/" + engineId + "/" + cacheFileName;
     }
 
-    /**
-     * 下载原图并尝试压缩；压缩失败则将原图原样写入缓存。
-     *
-     * @return 是否成功得到可用缓存文件
-     */
     private boolean downloadAndResizeAtomic(String fileUrl, Path targetPath, int maxWidth) throws IOException {
         Path tmp = tmpPath(targetPath);
         HttpURLConnection connection = (HttpURLConnection) new URL(fileUrl).openConnection();
@@ -152,11 +166,8 @@ public class ThumbnailCacheService {
             if (data == null || data.length == 0) {
                 return false;
             }
-            boolean resized = writeResizedJpeg(data, tmp, maxWidth);
-            if (!resized) {
-                // 生成缩略图失败：直接存原图作为缓存
-                log.info("缩略图生成失败，回退保存原图: size={}B", data.length);
-                Files.write(tmp, data);
+            if (!writeResizedWebp(data, tmp, maxWidth)) {
+                return false;
             }
             if (!isNonEmptyFile(tmp)) {
                 return false;
@@ -169,23 +180,95 @@ public class ThumbnailCacheService {
         }
     }
 
-    /**
-     * 尝试压缩为 JPEG 缩略图；失败返回 false（由调用方改存原图）
-     */
-    private boolean writeResizedJpeg(byte[] data, Path tmp, int maxWidth) {
+    private boolean writeResizedWebp(byte[] data, Path tmp, int maxWidth) {
         try {
-            Thumbnails.of(new java.io.ByteArrayInputStream(data))
-                    .size(maxWidth, maxWidth)
-                    .keepAspectRatio(true)
-                    .outputFormat("jpg")
-                    .outputQuality(JPEG_QUALITY)
-                    .toFile(tmp.toFile());
+            BufferedImage src = ImageIO.read(new ByteArrayInputStream(data));
+            if (src == null) {
+                log.warn("无法解码图片生成 WebP 缩略图, size={}B", data.length);
+                return false;
+            }
+            BufferedImage rgb = toRgb(src);
+            BufferedImage scaled = scaleDown(rgb, maxWidth);
+            if (!writeWebp(scaled, tmp, WEBP_QUALITY)) {
+                log.warn("写出 WebP 缩略图失败");
+                deleteQuietly(tmp);
+                return false;
+            }
             return isNonEmptyFile(tmp);
         } catch (Exception e) {
-            log.debug("图片压缩失败: {}", e.getMessage());
+            log.warn("生成 WebP 缩略图失败: {}", e.toString());
             deleteQuietly(tmp);
             return false;
         }
+    }
+
+    private boolean writeWebp(BufferedImage image, Path path, float quality) throws IOException {
+        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("webp");
+        if (!writers.hasNext()) {
+            return ImageIO.write(image, "webp", path.toFile());
+        }
+        ImageWriter writer = writers.next();
+        try (ImageOutputStream ios = ImageIO.createImageOutputStream(path.toFile())) {
+            writer.setOutput(ios);
+            ImageWriteParam param = writer.getDefaultWriteParam();
+            if (param.canWriteCompressed()) {
+                param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+                String[] types = param.getCompressionTypes();
+                if (types != null && types.length > 0) {
+                    String chosen = types[0];
+                    for (String t : types) {
+                        if (t != null && t.toLowerCase().contains("loss")) {
+                            chosen = t;
+                            break;
+                        }
+                    }
+                    param.setCompressionType(chosen);
+                }
+                try {
+                    param.setCompressionQuality(quality);
+                } catch (UnsupportedOperationException ignored) {
+                    // ignore
+                }
+            }
+            writer.write(null, new IIOImage(image, null, null), param);
+            return true;
+        } finally {
+            writer.dispose();
+        }
+    }
+
+    private BufferedImage toRgb(BufferedImage src) {
+        if (src.getType() == BufferedImage.TYPE_INT_RGB) {
+            return src;
+        }
+        BufferedImage rgb = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = rgb.createGraphics();
+        try {
+            g.drawImage(src, 0, 0, null);
+        } finally {
+            g.dispose();
+        }
+        return rgb;
+    }
+
+    private BufferedImage scaleDown(BufferedImage src, int maxEdge) {
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0 || (w <= maxEdge && h <= maxEdge)) {
+            return src;
+        }
+        double scale = Math.min((double) maxEdge / w, (double) maxEdge / h);
+        int nw = Math.max(1, (int) Math.round(w * scale));
+        int nh = Math.max(1, (int) Math.round(h * scale));
+        BufferedImage out = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        try {
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.drawImage(src, 0, 0, nw, nh, null);
+        } finally {
+            g.dispose();
+        }
+        return out;
     }
 
     private boolean isNonEmptyFile(Path path) {
@@ -204,7 +287,6 @@ public class ThumbnailCacheService {
         try {
             Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
-            // Windows 上 ATOMIC_MOVE 可能不可用
             Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
