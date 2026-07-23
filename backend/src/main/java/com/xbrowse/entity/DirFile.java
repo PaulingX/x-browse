@@ -8,7 +8,10 @@ import java.time.LocalDateTime;
 @Table(name = "dir_file", indexes = {
     @Index(name = "idx_dirfile_directory", columnList = "directory_id"),
     @Index(name = "idx_dirfile_directory_name", columnList = "directory_id, name"),
-    @Index(name = "idx_dirfile_name", columnList = "name")
+    @Index(name = "idx_dirfile_directory_ext", columnList = "directory_id, ext"),
+    @Index(name = "idx_dirfile_directory_mtime", columnList = "directory_id, modified_time"),
+    @Index(name = "idx_dirfile_name", columnList = "name"),
+    @Index(name = "idx_dirfile_engine", columnList = "engine_id")
 })
 public class DirFile {
 
@@ -41,6 +44,10 @@ public class DirFile {
     @Column(name = "thumbnail_url", length = 1000)
     private String thumbnailUrl;
 
+    /** 视频封面：同目录同名图片的代理 URL（同步时写入） */
+    @Column(name = "cover_url", length = 1000)
+    private String coverUrl;
+
     @Column(name = "modified_time")
     private Long modifiedTime;
 
@@ -70,6 +77,8 @@ public class DirFile {
     public void setExt(String ext) { this.ext = ext; }
     public String getThumbnailUrl() { return thumbnailUrl; }
     public void setThumbnailUrl(String thumbnailUrl) { this.thumbnailUrl = thumbnailUrl; }
+    public String getCoverUrl() { return coverUrl; }
+    public void setCoverUrl(String coverUrl) { this.coverUrl = coverUrl; }
     public Long getModifiedTime() { return modifiedTime; }
     public void setModifiedTime(Long modifiedTime) { this.modifiedTime = modifiedTime; }
     public LocalDateTime getSyncTime() { return syncTime; }

@@ -16,62 +16,53 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
 /**
  * 文件浏览核心服务
  * <p>
- * 优先从本地 file_directory / dir_file 读取；
- * 库中无数据或 refresh=true 时直连 Alist。
+ * 本地库使用 SQL LIMIT/OFFSET 分页；视频封面优先读入库 coverUrl。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class FileBrowseService {
 
+    private static final List<String> IMAGE_EXTS = List.copyOf(MediaTypes.IMAGE_EXTS);
+    private static final List<String> VIDEO_EXTS = List.copyOf(MediaTypes.VIDEO_EXTS);
+
     private final DirFileRepository dirFileRepository;
     private final FileDirectoryRepository fileDirectoryRepository;
     private final AlistEngineService engineService;
+    private final PathAccessService pathAccessService;
+    private final MediaAccessService mediaAccessService;
 
-    /**
-     * 浏览目录
-     *
-     * @param refresh   true 强制直连 Alist；false 优先本地库
-     * @param sortMode  排序：name_asc / name_desc / time_asc / time_desc
-     * @param mediaType 展示类型：all 综合 / image 仅图片 / video 仅视频（同名图作封面后不单独列出）
-     */
     public List<FileItem> listFiles(Long engineId, String path, boolean refresh, int page, int perPage,
                                     String sortMode, String mediaType) {
         path = PathUtils.normalize(path);
+        pathAccessService.assertPathAllowed(engineId, path);
         page = Math.max(page, 1);
-        perPage = Math.max(perPage, 1);
-        log.debug("查询目录: engineId={}, path={}, refresh={}, page={}, perPage={}, sort={}, mediaType={}",
-                engineId, path, refresh, page, perPage, sortMode, mediaType);
+        perPage = Math.min(Math.max(perPage, 1), 200);
+        String sort = normalizeSort(sortMode);
 
-        List<FileItem> items;
         if (!refresh) {
             Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, path);
             if (directoryOpt.isPresent()) {
-                items = loadFromDb(engineId, directoryOpt.get());
-            } else {
-                // 本地未同步时回退直连，便于管理端选目录
-                items = listFromAlist(engineId, path, false);
+                return listFromDbPaged(engineId, directoryOpt.get(), page, perPage, sort, mediaType);
             }
-        } else {
-            items = listFromAlist(engineId, path, true);
         }
-        // 分页前关联同名封面，避免封面图与视频不在同一页时丢失
-        applyVideoCoverThumbnails(engineId, items);
+
+        List<FileItem> items = listFromAlist(engineId, path, refresh);
+        applyVideoCoverInMemory(items);
         items = filterByMediaType(items, mediaType);
-        return paginate(sortItems(items, sortMode), page, perPage);
+        return paginate(sortItems(items, sort), page, perPage);
     }
 
-    /**
-     * 在指定父路径下按名称模糊搜索（仅本地库）
-     */
     public List<FileItem> searchFiles(Long engineId, String parentPath, String keyword, String mediaType) {
         parentPath = PathUtils.normalize(parentPath);
+        pathAccessService.assertPathAllowed(engineId, parentPath);
         Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, parentPath);
         if (directoryOpt.isEmpty()) {
             return List.of();
@@ -84,18 +75,103 @@ public class FileBrowseService {
         items.addAll(dirFileRepository.searchByNameAndDirectoryId(directoryId, keyword).stream()
                 .map(df -> toFileItem(df, engineId))
                 .toList());
-        applyVideoCoverThumbnails(engineId, items);
         return sortItems(filterByMediaType(items, mediaType), "name_asc");
     }
 
+    public String getDirThumbnail(Long engineId, String dirPath) {
+        String path = PathUtils.normalize(dirPath);
+        if (!pathAccessService.isPathAllowed(engineId, path)) {
+            return null;
+        }
+        Optional<FileDirectory> opt = fileDirectoryRepository.findByEngineIdAndPath(engineId, path);
+        if (opt.isEmpty()) {
+            return null;
+        }
+        FileDirectory directory = opt.get();
+        if (directory.getThumbnailUrl() != null && !directory.getThumbnailUrl().isEmpty()) {
+            return mediaAccessService.withAccessToken(directory.getThumbnailUrl());
+        }
+        return mediaAccessService.withAccessToken(resolveDirThumbFromChildren(engineId, directory.getId()));
+    }
+
+    public boolean isImageFile(String fileName) {
+        return MediaTypes.isImage(fileName);
+    }
+
+    public boolean isVideoFile(String fileName) {
+        return MediaTypes.isVideo(fileName);
+    }
+
     /**
-     * 按浏览类型过滤：目录始终保留；image 仅图片；video 仅视频（封面已挂到视频上）
+     * SQL 分页：目录在前 + 文件在后
      */
+    private List<FileItem> listFromDbPaged(Long engineId, FileDirectory directory,
+                                           int page, int perPage, String sort, String mediaType) {
+        Long dirId = directory.getId();
+        long dirCount = fileDirectoryRepository.countByEngineIdAndParentId(engineId, dirId);
+        int offset = (page - 1) * perPage;
+        List<FileItem> result = new ArrayList<>(perPage);
+
+        if (offset < dirCount) {
+            int dirSkip = offset;
+            int dirTake = (int) Math.min(perPage, dirCount - dirSkip);
+            List<FileDirectory> dirs = pageChildDirs(engineId, dirId, sort, dirSkip, dirTake);
+            for (FileDirectory d : dirs) {
+                result.add(toFileItem(d));
+            }
+        }
+
+        int remaining = perPage - result.size();
+        if (remaining > 0) {
+            int fileOffset = (int) Math.max(0, offset - dirCount);
+            List<DirFile> files = pageFiles(dirId, sort, mediaType, fileOffset, remaining);
+            for (DirFile df : files) {
+                result.add(toFileItem(df, engineId));
+            }
+        }
+        return result;
+    }
+
+    private List<FileDirectory> pageChildDirs(Long engineId, Long parentId, String sort, int offset, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        if (parentId == null) {
+            return fileDirectoryRepository.pageRootChildren(engineId, sort, limit, offset);
+        }
+        return fileDirectoryRepository.pageChildren(engineId, parentId, sort, limit, offset);
+    }
+
+    private List<DirFile> pageFiles(Long directoryId, String sort, String mediaType, int offset, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        String type = mediaType == null ? "all" : mediaType.trim().toLowerCase(Locale.ROOT);
+        if ("image".equals(type)) {
+            return dirFileRepository.pageByDirectoryIdAndExtIn(directoryId, IMAGE_EXTS, sort, limit, offset);
+        }
+        if ("video".equals(type)) {
+            return dirFileRepository.pageByDirectoryIdAndExtIn(directoryId, VIDEO_EXTS, sort, limit, offset);
+        }
+        return dirFileRepository.pageByDirectoryId(directoryId, sort, limit, offset);
+    }
+
+    private String normalizeSort(String sortMode) {
+        if (sortMode == null || sortMode.isBlank()) {
+            return "name_asc";
+        }
+        String s = sortMode.trim().toLowerCase(Locale.ROOT);
+        return switch (s) {
+            case "name_desc", "time_asc", "time_desc" -> s;
+            default -> "name_asc";
+        };
+    }
+
     private List<FileItem> filterByMediaType(List<FileItem> items, String mediaType) {
         if (items == null || items.isEmpty()) {
             return items == null ? List.of() : items;
         }
-        String type = mediaType == null ? "all" : mediaType.trim().toLowerCase();
+        String type = mediaType == null ? "all" : mediaType.trim().toLowerCase(Locale.ROOT);
         if (type.isEmpty() || "all".equals(type) || "mixed".equals(type)) {
             return items;
         }
@@ -115,73 +191,44 @@ public class FileBrowseService {
         return filtered;
     }
 
-    /**
-     * 同目录下若存在与视频同名的图片（扩展名不同），则作为视频列表预览图。
-     * 例如：demo.mp4 + demo.jpg → 使用 demo.jpg 作为封面。
-     */
-    private void applyVideoCoverThumbnails(Long engineId, List<FileItem> items) {
+    /** Alist 直连回退时的内存封面关联 */
+    private void applyVideoCoverInMemory(List<FileItem> items) {
         if (items == null || items.isEmpty()) {
             return;
         }
-        // baseName(小写) -> 封面图项（多图时取优先级更高的）
         Map<String, FileItem> coverByBase = new HashMap<>();
         for (FileItem item : items) {
-            if (Boolean.TRUE.equals(item.getIsDir()) || item.getName() == null) {
+            if (Boolean.TRUE.equals(item.getIsDir()) || item.getName() == null || !MediaTypes.isImage(item.getName())) {
                 continue;
             }
-            if (!MediaTypes.isImage(item.getName())) {
-                continue;
-            }
-            String base = baseNameWithoutExt(item.getName()).toLowerCase();
-            if (base.isEmpty()) {
-                continue;
-            }
+            String base = baseNameWithoutExt(item.getName()).toLowerCase(Locale.ROOT);
             FileItem existing = coverByBase.get(base);
             if (existing == null || coverImagePriority(item.getName()) < coverImagePriority(existing.getName())) {
                 coverByBase.put(base, item);
             }
         }
-        if (coverByBase.isEmpty()) {
-            return;
-        }
         for (FileItem item : items) {
-            if (Boolean.TRUE.equals(item.getIsDir()) || item.getName() == null) {
+            if (Boolean.TRUE.equals(item.getIsDir()) || item.getName() == null || !MediaTypes.isVideo(item.getName())) {
                 continue;
             }
-            if (!MediaTypes.isVideo(item.getName())) {
-                continue;
-            }
-            FileItem cover = coverByBase.get(baseNameWithoutExt(item.getName()).toLowerCase());
+            FileItem cover = coverByBase.get(baseNameWithoutExt(item.getName()).toLowerCase(Locale.ROOT));
             if (cover == null) {
                 continue;
             }
-            // 优先用封面图自身的列表缩略图，否则代理原图
             String thumb = cover.getThumbnailUrl();
             if (thumb == null || thumb.isEmpty()) {
                 thumb = cover.getUrl();
-            }
-            if (thumb == null || thumb.isEmpty()) {
-                thumb = MediaTypes.proxyUrl(engineId, cover.getPath());
             }
             item.setThumbnailUrl(thumb);
         }
     }
 
-    /**
-     * 去掉最后一个扩展名，得到主文件名
-     */
-    private String baseNameWithoutExt(String fileName) {
+    private static String baseNameWithoutExt(String fileName) {
         int dot = fileName.lastIndexOf('.');
-        if (dot <= 0) {
-            return fileName;
-        }
-        return fileName.substring(0, dot);
+        return dot <= 0 ? fileName : fileName.substring(0, dot);
     }
 
-    /**
-     * 封面图扩展名优先级（数值越小越优先）
-     */
-    private int coverImagePriority(String fileName) {
+    private static int coverImagePriority(String fileName) {
         String ext = MediaTypes.extensionOf(fileName);
         if (ext == null) {
             return 100;
@@ -196,38 +243,16 @@ public class FileBrowseService {
         };
     }
 
-    /**
-     * 获取目录预览图 URL：目录字段或子文件/子目录的原图代理
-     */
-    public String getDirThumbnail(Long engineId, String dirPath) {
-        Optional<FileDirectory> opt = fileDirectoryRepository.findByEngineIdAndPath(engineId, PathUtils.normalize(dirPath));
-        if (opt.isEmpty()) {
-            return null;
-        }
-        FileDirectory directory = opt.get();
-        if (directory.getThumbnailUrl() != null && !directory.getThumbnailUrl().isEmpty()) {
-            return directory.getThumbnailUrl();
-        }
-        return resolveDirThumbFromChildren(engineId, directory.getId());
-    }
-
-    /**
-     * 从目录内第一张图片原图代理回退解析预览图
-     */
     private String resolveDirThumbFromChildren(Long engineId, Long directoryId) {
         if (directoryId == null) {
             return null;
         }
-        List<DirFile> files = dirFileRepository.findByDirectoryId(directoryId);
+        List<DirFile> files = dirFileRepository.findImageFilesByDirectoryId(directoryId, IMAGE_EXTS);
         for (DirFile df : files) {
-            if (Boolean.TRUE.equals(df.getIsDir()) || df.getName() == null) {
+            if (df.getName() == null) {
                 continue;
             }
-            if (!MediaTypes.isImage(df.getName())) {
-                continue;
-            }
-            String fullPath = PathUtils.join(df.getParentPath(), df.getName());
-            return MediaTypes.proxyUrl(engineId, fullPath);
+            return MediaTypes.proxyUrl(engineId, PathUtils.join(df.getParentPath(), df.getName()));
         }
         List<FileDirectory> subDirs = fileDirectoryRepository.findByEngineIdAndParentId(engineId, directoryId);
         for (FileDirectory sub : subDirs) {
@@ -238,37 +263,6 @@ public class FileBrowseService {
         return null;
     }
 
-    /**
-     * 判断是否为图片文件
-     */
-    public boolean isImageFile(String fileName) {
-        return MediaTypes.isImage(fileName);
-    }
-
-    /**
-     * 判断是否为视频文件
-     */
-    public boolean isVideoFile(String fileName) {
-        return MediaTypes.isVideo(fileName);
-    }
-
-    /**
-     * 从本地库加载某目录下的子目录与文件
-     */
-    private List<FileItem> loadFromDb(Long engineId, FileDirectory directory) {
-        List<FileItem> items = new ArrayList<>();
-        items.addAll(fileDirectoryRepository.findByEngineIdAndParentId(engineId, directory.getId()).stream()
-                .map(this::toFileItem)
-                .toList());
-        items.addAll(dirFileRepository.findByDirectoryId(directory.getId()).stream()
-                .map(df -> toFileItem(df, engineId))
-                .toList());
-        return items;
-    }
-
-    /**
-     * 直连 Alist 拉取目录列表，并为媒体文件填充访问 URL
-     */
     private List<FileItem> listFromAlist(Long engineId, String path, boolean refresh) {
         try {
             AlistClient client = engineService.getClient(engineId);
@@ -277,7 +271,8 @@ public class FileBrowseService {
                 if (Boolean.TRUE.equals(item.getIsDir())) {
                     continue;
                 }
-                item.setUrl(MediaTypes.mediaUrl(engineId, item.getPath(), item.getName()));
+                String url = MediaTypes.mediaUrl(engineId, item.getPath(), item.getName());
+                item.setUrl(mediaAccessService.withAccessToken(url));
                 if (MediaTypes.isImage(item.getName())) {
                     item.setThumbnailUrl(item.getUrl());
                 }
@@ -289,18 +284,12 @@ public class FileBrowseService {
         }
     }
 
-    /**
-     * 排序：目录优先，再按名称或时间
-     */
     private List<FileItem> sortItems(List<FileItem> items, String sortMode) {
         List<FileItem> sorted = new ArrayList<>(items);
         sorted.sort(buildComparator(sortMode));
         return sorted;
     }
 
-    /**
-     * 内存分页
-     */
     private List<FileItem> paginate(List<FileItem> items, int page, int perPage) {
         int from = Math.max(0, (page - 1) * perPage);
         if (from >= items.size()) {
@@ -313,18 +302,15 @@ public class FileBrowseService {
         String mode = sortMode == null ? "name_asc" : sortMode;
         Comparator<FileItem> primary = mode.startsWith("time_")
                 ? Comparator.comparing(item -> item.getModified() == null ? 0L : item.getModified())
-                : Comparator.comparing(item -> item.getName() == null ? "" : item.getName().toLowerCase());
+                : Comparator.comparing(item -> item.getName() == null ? "" : item.getName().toLowerCase(Locale.ROOT));
         if (mode.endsWith("_desc")) {
             primary = primary.reversed();
         }
         return Comparator.comparing(FileItem::getIsDir, Comparator.nullsLast(Boolean::compareTo)).reversed()
                 .thenComparing(primary)
-                .thenComparing(item -> item.getName() == null ? "" : item.getName().toLowerCase());
+                .thenComparing(item -> item.getName() == null ? "" : item.getName().toLowerCase(Locale.ROOT));
     }
 
-    /**
-     * DirFile 转 FileItem：url / thumbnailUrl 均用原图代理（不生成缩略图）
-     */
     private FileItem toFileItem(DirFile df, Long engineId) {
         FileItem fi = new FileItem();
         fi.setName(df.getName());
@@ -335,20 +321,27 @@ public class FileBrowseService {
         fi.setPath(fullPath);
         fi.setModified(df.getModifiedTime());
         if (Boolean.TRUE.equals(df.getIsDir())) {
-            fi.setUrl(df.getThumbnailUrl());
-            fi.setThumbnailUrl(df.getThumbnailUrl());
+            String thumb = mediaAccessService.withAccessToken(df.getThumbnailUrl());
+            fi.setUrl(thumb);
+            fi.setThumbnailUrl(thumb);
         } else {
-            fi.setUrl(MediaTypes.mediaUrl(engineId, fullPath, df.getName()));
+            String url = mediaAccessService.withAccessToken(MediaTypes.mediaUrl(engineId, fullPath, df.getName()));
+            fi.setUrl(url);
             if (MediaTypes.isImage(df.getName())) {
-                fi.setThumbnailUrl(fi.getUrl());
+                fi.setThumbnailUrl(url);
+            } else if (MediaTypes.isVideo(df.getName())) {
+                // 优先使用同步时写入的 coverUrl
+                String cover = df.getCoverUrl();
+                if (cover != null && !cover.isEmpty()) {
+                    fi.setThumbnailUrl(mediaAccessService.withAccessToken(cover));
+                } else if (df.getThumbnailUrl() != null && !df.getThumbnailUrl().isEmpty()) {
+                    fi.setThumbnailUrl(mediaAccessService.withAccessToken(df.getThumbnailUrl()));
+                }
             }
         }
         return fi;
     }
 
-    /**
-     * FileDirectory 转 FileItem（目录项）；无目录缩略图时回退子文件预览
-     */
     private FileItem toFileItem(FileDirectory directory) {
         FileItem fi = new FileItem();
         fi.setName(directory.getName());
@@ -360,6 +353,7 @@ public class FileBrowseService {
         if (thumb == null || thumb.isEmpty()) {
             thumb = resolveDirThumbFromChildren(directory.getEngineId(), directory.getId());
         }
+        thumb = mediaAccessService.withAccessToken(thumb);
         fi.setUrl(thumb);
         fi.setThumbnailUrl(thumb);
         return fi;

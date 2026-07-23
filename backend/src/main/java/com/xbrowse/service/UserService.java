@@ -31,7 +31,30 @@ public class UserService {
      * 获取当前登录用户实体
      */
     public User getCurrentUser() {
-        return (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        User user = getCurrentUserOrNull();
+        if (user == null) {
+            throw new RuntimeException("未登录");
+        }
+        return user;
+    }
+
+    /**
+     * 当前登录用户，未登录返回 null
+     */
+    public User getCurrentUserOrNull() {
+        try {
+            var auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth == null || !auth.isAuthenticated()) {
+                return null;
+            }
+            Object principal = auth.getPrincipal();
+            if (principal instanceof User user) {
+                return user;
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

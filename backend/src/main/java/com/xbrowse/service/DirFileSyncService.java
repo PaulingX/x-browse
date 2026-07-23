@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -313,9 +314,13 @@ public class DirFileSyncService {
                     df.setExt(item.getExt());
                     df.setModifiedTime(item.getModified());
                     df.setSyncTime(LocalDateTime.now());
+                    // coverUrl 在本批保存前统一关联
                     filesToSave.add(df);
                 }
             }
+
+            // 视频封面：同目录同名图片 → coverUrl（代理路径，列表直接用）
+            applyVideoCoverUrls(engineId, path, filesToSave);
 
             // 删除库中有、文件系统没有的文件
             List<DirFile> toDelete = new ArrayList<>();
@@ -340,7 +345,66 @@ public class DirFileSyncService {
     /**
      * 是否跳过入库/同步（点目录、配置的忽略后缀）
      */
-    private boolean shouldSkipItem(FileItem item) {
+        /**
+     * 同步时为视频写入 coverUrl：同目录 basename 相同的图片优先 jpg/png。
+     */
+    private void applyVideoCoverUrls(Long engineId, String parentPath, List<DirFile> files) {
+        if (files == null || files.isEmpty()) {
+            return;
+        }
+        Map<String, DirFile> coverByBase = new HashMap<>();
+        for (DirFile df : files) {
+            if (df.getName() == null || !MediaTypes.isImage(df.getName())) {
+                continue;
+            }
+            String base = baseNameWithoutExt(df.getName()).toLowerCase(Locale.ROOT);
+            if (base.isEmpty()) {
+                continue;
+            }
+            DirFile existing = coverByBase.get(base);
+            if (existing == null || coverImagePriority(df.getName()) < coverImagePriority(existing.getName())) {
+                coverByBase.put(base, df);
+            }
+        }
+        for (DirFile df : files) {
+            if (df.getName() == null || !MediaTypes.isVideo(df.getName())) {
+                df.setCoverUrl(null);
+                continue;
+            }
+            DirFile cover = coverByBase.get(baseNameWithoutExt(df.getName()).toLowerCase(Locale.ROOT));
+            if (cover == null) {
+                df.setCoverUrl(null);
+                continue;
+            }
+            String coverPath = PathUtils.join(parentPath, cover.getName());
+            df.setCoverUrl(MediaTypes.proxyUrl(engineId, coverPath));
+        }
+    }
+
+    private static String baseNameWithoutExt(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot <= 0) {
+            return fileName;
+        }
+        return fileName.substring(0, dot);
+    }
+
+    private static int coverImagePriority(String fileName) {
+        String ext = MediaTypes.extensionOf(fileName);
+        if (ext == null) {
+            return 100;
+        }
+        return switch (ext) {
+            case "jpg", "jpeg" -> 1;
+            case "png" -> 2;
+            case "webp" -> 3;
+            case "gif" -> 4;
+            case "bmp" -> 5;
+            default -> 50;
+        };
+    }
+
+private boolean shouldSkipItem(FileItem item) {
         if (item == null || item.getName() == null) {
             return true;
         }

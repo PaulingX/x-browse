@@ -21,13 +21,27 @@ public class GlobalExceptionHandler {
 
     private boolean isBinaryRequest(HttpServletRequest request) {
         String uri = request.getRequestURI();
-        return uri.startsWith("/api/files/proxy/") || uri.startsWith("/api/files/stream/") || uri.startsWith("/api/files/thumbnail/");
+        return uri.startsWith("/api/files/proxy/")
+                || uri.startsWith("/api/files/stream/")
+                || uri.startsWith("/api/files/thumbnail/");
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public ApiResponse<Void> handleAccessDenied(AccessDeniedException e, HttpServletRequest request) {
+        if (isBinaryRequest(request)) {
+            return null;
+        }
+        String msg = e.getMessage();
+        return ApiResponse.error(403, msg != null && !msg.isBlank() ? msg : "无权访问");
     }
 
     @ExceptionHandler(RuntimeException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleRuntimeException(RuntimeException e, HttpServletRequest request) {
-        if (isBinaryRequest(request)) return null;
+        if (isBinaryRequest(request)) {
+            return null;
+        }
         return ApiResponse.error(400, e.getMessage());
     }
 
@@ -35,12 +49,6 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     public ApiResponse<Void> handleBadCredentialsException(BadCredentialsException e) {
         return ApiResponse.error(401, "用户名或密码错误");
-    }
-
-    @ExceptionHandler(AccessDeniedException.class)
-    @ResponseStatus(HttpStatus.FORBIDDEN)
-    public ApiResponse<Void> handleAccessDeniedException(AccessDeniedException e) {
-        return ApiResponse.error(403, "权限不足");
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -55,7 +63,9 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ApiResponse<Void> handleException(Exception e, HttpServletRequest request) {
-        if (isBinaryRequest(request)) return null;
+        if (isBinaryRequest(request)) {
+            return null;
+        }
         return ApiResponse.error(500, "服务器内部错误");
     }
 }

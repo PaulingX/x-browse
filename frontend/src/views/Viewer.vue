@@ -25,9 +25,23 @@
     <!-- 图片查看器 -->
     <template v-else-if="isImage">
       <div v-if="viewMode === 'scroll'" ref="scrollContainer" class="image-scroll" @scroll="onScroll">
-        <div v-for="(file, index) in files" :key="file.path || file.name + index" class="image-item">
-          <img :src="imageDisplaySrc(file, index)" :alt="file.name" class="scroll-image"
-            @error="onImageError" @load="onFullImageLoad(file, index)" loading="lazy" decoding="async" />
+        <div class="virtual-spacer" :style="{ height: virtualTotalHeight + 'px' }">
+          <div
+            v-for="item in virtualItems"
+            :key="item.key"
+            class="image-item virtual-item"
+            :style="{ top: item.top + 'px', height: itemHeight + 'px' }"
+          >
+            <img
+              :src="imageDisplaySrc(item.file, item.index)"
+              :alt="item.file.name"
+              class="scroll-image"
+              @error="onImageError"
+              @load="onFullImageLoad(item.file, item.index)"
+              loading="lazy"
+              decoding="async"
+            />
+          </div>
         </div>
       </div>
       <div v-else class="image-swipe-view">
@@ -57,8 +71,8 @@
         v-else
         ref="videoRef"
         :key="(currentFile?.path || currentFile?.url || '') + '-' + videoRetryKey"
-        :src="currentFile?.url"
-        :poster="currentFile?.thumbnailUrl || undefined"
+        :src="mediaUrl(currentFile?.url)"
+        :poster="mediaUrl(currentFile?.thumbnailUrl) || undefined"
         playsinline
         preload="metadata"
         class="video-player"
@@ -170,6 +184,7 @@ import { showToast } from 'vant'
 import api from '@/api'
 import { isImage as isImageExt, isVideo as isVideoExt, isBrowserPlayableVideo } from '@/utils/file'
 import { getCachedSrc, cacheImage, rememberLoaded, preloadImages } from '@/utils/imageCache'
+import { withMediaToken } from '@/utils/mediaAuth'
 
 const router = useRouter()
 const route = useRoute()
@@ -195,6 +210,11 @@ const viewMode = ref('scroll')
 const videoError = ref('')
 const videoRetryKey = ref(0)
 const fullImageReady = ref(new Set())
+const itemHeight = ref(Math.round(window.innerHeight || 800))
+const scrollTop = ref(0)
+const viewportHeight = ref(Math.round(window.innerHeight || 800))
+const VIRTUAL_OVERSCAN = 2
+let progressSaveTimer = null
 
 // 视频状态
 const isPlaying = ref(false)
@@ -252,6 +272,7 @@ function onVideoLoaded() {
     duration.value = videoRef.value.duration || 0
     applyVolume()
     isPlaying.value = !videoRef.value.paused
+    restoreVideoProgress()
   }
 }
 
@@ -294,10 +315,60 @@ function toggleMute() {
 function onTimeUpdate() {
   if (!videoRef.value || progressDragging) return
   currentTime.value = videoRef.value.currentTime || 0
-  // 缓冲进度
   if (videoRef.value.buffered.length > 0) {
     bufferedPercent.value = (videoRef.value.buffered.end(videoRef.value.buffered.length - 1) / (videoRef.value.duration || 1)) * 100
   }
+  scheduleSaveVideoProgress()
+}
+
+function videoProgressKey() {
+  const f = currentFile.value
+  if (!f) return ''
+  return `xbrowse_vprog_${engineId.value}_${f.path || f.name || ''}`
+}
+
+function scheduleSaveVideoProgress() {
+  if (progressSaveTimer) return
+  progressSaveTimer = setTimeout(() => {
+    progressSaveTimer = null
+    saveVideoProgress()
+  }, 1500)
+}
+
+function saveVideoProgress() {
+  const key = videoProgressKey()
+  if (!key || !videoRef.value) return
+  const t = videoRef.value.currentTime || 0
+  const d = videoRef.value.duration || 0
+  // 结束附近或开头不记
+  if (!d || t < 3 || t > d - 5) {
+    try { localStorage.removeItem(key) } catch (_) {}
+    return
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify({ t, d, ts: Date.now() }))
+  } catch (_) {}
+}
+
+function restoreVideoProgress() {
+  const key = videoProgressKey()
+  if (!key || !videoRef.value) return
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return
+    const data = JSON.parse(raw)
+    if (!data || typeof data.t !== 'number') return
+    // 7 天过期
+    if (data.ts && Date.now() - data.ts > 7 * 24 * 3600 * 1000) {
+      localStorage.removeItem(key)
+      return
+    }
+    const d = videoRef.value.duration || data.d || 0
+    if (data.t > 3 && (!d || data.t < d - 5)) {
+      videoRef.value.currentTime = data.t
+      currentTime.value = data.t
+    }
+  } catch (_) {}
 }
 
 function togglePlay() {
@@ -327,6 +398,7 @@ function retryVideo() {
 }
 
 function pauseVideo() {
+  saveVideoProgress()
   if (videoRef.value) {
     try { videoRef.value.pause() } catch (_) { /* ignore */ }
   }
@@ -614,18 +686,29 @@ function toggleViewMode() {
 
 function scrollToIndex(index) {
   if (!scrollContainer.value) return
-  const items = scrollContainer.value.children
-  if (items[index]) scrollContainer.value.scrollTo({ top: items[index].offsetTop, behavior: 'auto' })
+  measureItemHeight()
+  const top = Math.max(0, index) * itemHeight.value
+  scrollContainer.value.scrollTo({ top, behavior: 'auto' })
+  scrollTop.value = top
 }
 
 function onScroll() {
   if (!scrollContainer.value) return
-  let closest = 0, minDist = Infinity
-  for (let i = 0; i < scrollContainer.value.children.length; i++) {
-    const dist = Math.abs(scrollContainer.value.children[i].getBoundingClientRect().top)
-    if (dist < minDist) { minDist = dist; closest = i }
-  }
-  currentIndex.value = closest
+  scrollTop.value = scrollContainer.value.scrollTop
+  viewportHeight.value = scrollContainer.value.clientHeight || window.innerHeight
+  const h = itemHeight.value || 1
+  const idx = Math.min(files.value.length - 1, Math.max(0, Math.round(scrollTop.value / h)))
+  if (idx !== currentIndex.value) currentIndex.value = idx
+}
+
+function measureItemHeight() {
+  const h = scrollContainer.value?.clientHeight || window.innerHeight || 800
+  itemHeight.value = Math.round(h)
+  viewportHeight.value = Math.round(h)
+}
+
+function onWindowResize() {
+  measureItemHeight()
 }
 
 function jumpToVideo(offset) {
@@ -644,11 +727,15 @@ function nextVideo() { jumpToVideo(1) }
 
 function goBack() { releaseVideo(); router.back() }
 
+function mediaUrl(url) {
+  return withMediaToken(url || '')
+}
+
 function imageDisplaySrc(file, index) {
   if (!file) return ''
   const key = file.path || file.name || String(index)
   const url = fullImageReady.value.has(key) && file.url ? file.url : (file.thumbnailUrl || file.url || '')
-  return getCachedSrc(url) || url
+  return getCachedSrc(withMediaToken(url)) || withMediaToken(url)
 }
 
 function onFullImageLoad(file, index) {
@@ -698,16 +785,21 @@ onMounted(() => {
   loadFiles()
   viewerPage.value?.focus()
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('resize', onWindowResize)
+  measureItemHeight()
   applyScreenOrientation()
 })
 
 onUnmounted(() => {
+  saveVideoProgress()
   releaseVideo()
   document.removeEventListener('fullscreenchange', onFullscreenChange)
+  window.removeEventListener('resize', onWindowResize)
   try { screen.orientation?.unlock?.() } catch (_) { /* ignore */ }
   if (scrollTimer) clearTimeout(scrollTimer)
   if (wheelTimer) clearTimeout(wheelTimer)
   if (toolbarTimer) clearTimeout(toolbarTimer)
+  if (progressSaveTimer) clearTimeout(progressSaveTimer)
 })
 </script>
 
@@ -736,9 +828,11 @@ onUnmounted(() => {
 }
 
 /* 图片 */
-.image-scroll { width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-.image-item { width: 100%; display: flex; }
-.scroll-image { width: 100%; display: block; }
+.image-scroll { width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; position: relative; }
+.virtual-spacer { position: relative; width: 100%; }
+.image-item { width: 100%; display: flex; align-items: center; justify-content: center; }
+.image-item.virtual-item { position: absolute; left: 0; right: 0; }
+.scroll-image { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
 .image-swipe-view { width: 100%; height: 100vh; position: relative; overflow: hidden; }
 .swipe-image-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
 .swipe-image { max-width: 100%; max-height: 100%; object-fit: contain; }

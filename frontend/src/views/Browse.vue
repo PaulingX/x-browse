@@ -157,10 +157,12 @@ import {
   getCachedSrc,
   preloadImages as cachePreloadImages,
   clearImageCache,
+  setCachePath,
   startCacheTimer,
   stopCacheTimer,
   rememberLoaded
 } from '@/utils/imageCache'
+import { withMediaToken } from '@/utils/mediaAuth'
 
 const router = useRouter()
 const route = useRoute()
@@ -279,6 +281,7 @@ async function loadFiles() {
   page.value = 1
   hasMore.value = true
   canLoadMoreOnIntersect = true
+  setCachePath(`${engineId.value}:${currentPath.value}`)
   try {
     await fetchPage(currentPath.value, page.value, { preload: true })
   } finally {
@@ -302,6 +305,8 @@ function handleClick(item) {
     const pos = { y: window.scrollY, page: page.value }
     scrollPositions.set(currentPath.value, pos)
     saveScrollPositions()
+    // 进入子目录：切换缓存分区，淘汰上级缓存
+    setCachePath(`${engineId.value}:${item.path}`)
     currentPath.value = item.path
     showBackButton.value = true
     searchText.value = ''
@@ -346,6 +351,7 @@ function resetListState() {
 }
 
 async function restorePath(path, { showBack = false, preload = false } = {}) {
+  setCachePath(`${engineId.value}:${path}`)
   currentPath.value = path
   showBackButton.value = showBack
   searchText.value = ''
@@ -429,13 +435,13 @@ function handleImgError(e) {
 /** 列表展示用缩略图：优先 thumbnailUrl，回退 url */
 function listThumbSrc(item) {
   if (!item) return ''
-  return item.thumbnailUrl || item.url || ''
+  return withMediaToken(item.thumbnailUrl || item.url || '')
 }
 
 /** 目录预览：批量接口 > 列表自带 thumbnail/url */
 function dirPreviewSrc(item) {
   if (!item) return ''
-  return dirThumbnails.value[item.path] || item.thumbnailUrl || item.url || ''
+  return withMediaToken(dirThumbnails.value[item.path] || item.thumbnailUrl || item.url || '')
 }
 
 function onDirThumbError(e, item) {

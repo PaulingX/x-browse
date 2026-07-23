@@ -5,6 +5,7 @@ import com.xbrowse.dto.FileItem;
 import com.xbrowse.service.AlistEngineService;
 import com.xbrowse.service.DirFileSyncService;
 import com.xbrowse.service.FileBrowseService;
+import com.xbrowse.service.PathAccessService;
 import com.xbrowse.service.ThumbnailCacheService;
 import com.xbrowse.util.AlistClient;
 import com.xbrowse.util.MediaTypes;
@@ -19,6 +20,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.InputStream;
@@ -32,7 +34,7 @@ import java.util.Map;
 /**
  * 文件浏览控制器
  * <p>
- * 提供目录列表、搜索、同步、预览图、文件代理与视频流式播放接口。
+ * 列表/搜索/媒体均需 JWT；路径级权限由 PathAccessService 校验。
  */
 @Slf4j
 @RestController
@@ -47,6 +49,7 @@ public class FileController {
     private final DirFileSyncService dirFileSyncService;
     private final AlistEngineService engineService;
     private final ThumbnailCacheService thumbnailCacheService;
+    private final PathAccessService pathAccessService;
 
     /** 浏览器缓存图片秒数（proxy / thumbnail） */
     @Value("${xbrowse.image-cache-seconds:86400}")
@@ -59,7 +62,7 @@ public class FileController {
     public ApiResponse<Map<String, String>> getDirThumbnails(
             @RequestParam Long engineId,
             @RequestParam List<String> paths) {
-        log.info("获取目录预览图: engineId={}, paths={}", engineId, paths.size());
+        log.debug("获取目录预览图: engineId={}, paths={}", engineId, paths.size());
         Map<String, String> result = new LinkedHashMap<>();
         for (String dirPath : paths) {
             result.put(dirPath, fileBrowseService.getDirThumbnail(engineId, dirPath));
@@ -68,16 +71,12 @@ public class FileController {
     }
 
     /**
-     * 提供本地缓存的目录预览图
-     * <p>
-     * 从本地缓存目录读取缩略图文件，避免每次都代理请求 Alist。
-     * 缓存文件由 DirFileSyncService 在同步时自动下载。
+     * 提供本地缓存的缩略图（需登录；缩略图文件名无法反推路径，仅要求认证）
      */
     @GetMapping("/thumbnail/{engineId}/**")
     public ResponseEntity<Resource> serveCachedThumbnail(
             @PathVariable Long engineId,
             HttpServletRequest request) {
-        // 从请求 URI 中提取缓存文件名
         String cacheFileName = PathUtils.extractFilePath(engineId, request.getRequestURI(), "thumbnail")
                 .substring(1);
         log.debug("提供缓存预览图: engineId={}, cacheFileName={}", engineId, cacheFileName);
@@ -93,7 +92,7 @@ public class FileController {
             }
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(MediaTypes.contentType(cacheFileName)))
-                    .header(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds)
+                    .header(HttpHeaders.CACHE_CONTROL, "private, max-age=" + imageCacheSeconds)
                     .body(resource);
         } catch (Exception e) {
             log.error("读取缓存预览图失败: engineId={}, cacheFileName={}", engineId, cacheFileName, e);
@@ -114,9 +113,10 @@ public class FileController {
     }
 
     /**
-     * 手动触发引擎下已配置浏览目录的同步
+     * 手动触发引擎下已配置浏览目录的同步（仅管理员）
      */
     @PostMapping("/sync")
+    @PreAuthorize("hasRole('ADMIN')")
     public ApiResponse<String> triggerSync(@RequestParam Long engineId) {
         log.info("手动触发同步: engineId={}", engineId);
         dirFileSyncService.syncEngine(engineId);
@@ -137,25 +137,27 @@ public class FileController {
             @RequestParam(defaultValue = "20") int perPage,
             @RequestParam(defaultValue = "name_asc") String sort,
             @RequestParam(defaultValue = "all") String mediaType) {
+        // 路径权限在 FileBrowseService 内校验（含 refresh 直连）
         return ApiResponse.success(
                 fileBrowseService.listFiles(engineId, path, refresh, page, perPage, sort, mediaType));
     }
 
     /**
-     * 代理获取文件（用于跨域或需要认证的图片等）
-     * <p>
-     * 不落盘原图，仅转发上游；带 Cache-Control 便于浏览器缓存。
+     * 代理获取文件（图片等）
      */
     @GetMapping("/proxy/{engineId}/**")
     public ResponseEntity<Resource> proxyFile(@PathVariable Long engineId, HttpServletRequest request) {
         try {
             String fullPath = PathUtils.extractFilePath(engineId, request.getRequestURI(), "proxy");
+            pathAccessService.assertPathAllowed(engineId, fullPath);
             String fileUrl = resolveFileUrl(engineId, fullPath);
             if (fileUrl == null) {
                 return ResponseEntity.notFound().build();
             }
             return openUpstream(fileUrl, MediaTypes.contentType(fullPath), null,
-                    Map.of(HttpHeaders.CACHE_CONTROL, "public, max-age=" + imageCacheSeconds));
+                    Map.of(HttpHeaders.CACHE_CONTROL, "private, max-age=" + imageCacheSeconds));
+        } catch (org.springframework.security.access.AccessDeniedException e) {
+            return ResponseEntity.status(403).build();
         } catch (Exception e) {
             log.error("代理文件失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();
@@ -163,7 +165,7 @@ public class FileController {
     }
 
     /**
-     * 获取流媒体（用于视频播放，支持 Range 请求与拖动进度）
+     * 获取流媒体（视频 Range）
      */
     @GetMapping("/stream/{engineId}/**")
     public ResponseEntity<Resource> streamFile(
@@ -172,20 +174,19 @@ public class FileController {
             HttpServletRequest request) {
         try {
             String fullPath = PathUtils.extractFilePath(engineId, request.getRequestURI(), "stream");
+            pathAccessService.assertPathAllowed(engineId, fullPath);
             String fileUrl = resolveFileUrl(engineId, fullPath);
             if (fileUrl == null) {
                 return ResponseEntity.notFound().build();
             }
             String contentType = MediaTypes.contentType(fullPath);
 
-            // 无 Range：整文件返回，并声明支持字节范围
             if (range == null || range.isBlank()) {
                 return openUpstream(fileUrl, contentType, null,
                         Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"), 200, true);
             }
 
             long fileSize = headContentLength(fileUrl);
-            // 无法获取大小时透传 Range，由上游处理
             if (fileSize <= 0) {
                 return openUpstream(fileUrl, contentType, range,
                         Map.of(HttpHeaders.ACCEPT_RANGES, "bytes"), 206, true);
@@ -206,6 +207,8 @@ public class FileController {
                     HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength)
             );
             return openUpstream(fileUrl, contentType, "bytes=" + start + "-" + end, headers, PARTIAL_CONTENT, true);
+        } catch (org.springframework.security.access.AccessDeniedException e) {
+            return ResponseEntity.status(403).build();
         } catch (Exception e) {
             log.error("流媒体播放失败: engineId={}, path={}", engineId, request.getRequestURI(), e);
             return ResponseEntity.internalServerError().build();

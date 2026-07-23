@@ -2,6 +2,7 @@ package com.xbrowse.security;
 
 import com.xbrowse.entity.User;
 import com.xbrowse.repository.UserRepository;
+import com.xbrowse.service.MediaAccessService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -19,6 +20,8 @@ import java.util.Optional;
 
 /**
  * JWT 认证过滤器
+ * <p>
+ * 支持 Authorization Bearer 与 query token（供 &lt;img&gt;/&lt;video&gt; 使用）。
  */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -34,46 +37,38 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        // 从请求头获取 Token
         String token = getTokenFromRequest(request);
 
         if (StringUtils.hasText(token) && jwtUtil.validateToken(token)) {
-            // 从 Token 中获取用户名
             String username = jwtUtil.getUsernameFromToken(token);
-
-            // 查询用户
             Optional<User> userOpt = userRepository.findByUsername(username);
             if (userOpt.isPresent()) {
                 User user = userOpt.get();
-
-                // 创建认证对象
-                UsernamePasswordAuthenticationToken authentication =
-                        new UsernamePasswordAuthenticationToken(
-                                user,
-                                null,
-                                Collections.singletonList(
-                                        new SimpleGrantedAuthority(user.getAdmin() ? "ROLE_ADMIN" : "ROLE_USER")
-                                )
-                        );
-
-                // 设置到安全上下文
-                SecurityContextHolder.getContext().setAuthentication(authentication);
+                if (Boolean.TRUE.equals(user.getEnabled())) {
+                    UsernamePasswordAuthenticationToken authentication =
+                            new UsernamePasswordAuthenticationToken(
+                                    user,
+                                    null,
+                                    Collections.singletonList(
+                                            new SimpleGrantedAuthority(user.getAdmin() ? "ROLE_ADMIN" : "ROLE_USER")
+                                    )
+                            );
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                    // 供列表接口为媒体 URL 追加 token
+                    request.setAttribute(MediaAccessService.REQUEST_TOKEN_ATTR, token);
+                }
             }
         }
 
         filterChain.doFilter(request, response);
     }
 
-    /**
-     * 从请求头中提取 Token
-     */
     private String getTokenFromRequest(HttpServletRequest request) {
-        // 优先从 Header 获取
         String bearerToken = request.getHeader("Authorization");
         if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
-            return bearerToken.substring(7);
+            return bearerToken.substring(7).trim();
         }
-        // 其次从 query 参数获取（用于 img/video 标签的 src）
-        return request.getParameter("token");
+        String queryToken = request.getParameter("token");
+        return StringUtils.hasText(queryToken) ? queryToken.trim() : null;
     }
 }

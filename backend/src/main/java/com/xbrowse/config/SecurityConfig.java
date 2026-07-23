@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -22,9 +23,12 @@ import java.util.List;
 
 /**
  * Spring Security 配置
+ * <p>
+ * 媒体接口不再 permitAll：需 JWT（Header 或 ?token=）。
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
@@ -40,19 +44,13 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                // 登录
                 .requestMatchers("/api/auth/login").permitAll()
-                // 文件代理（<img> <video> 等标签无法携带 Authorization header）
-                .requestMatchers("/api/files/proxy/**").permitAll()
-                .requestMatchers("/api/files/stream/**").permitAll()
-                .requestMatchers("/api/files/thumbnail/**").permitAll()
-                // 静态资源和前端页面
+                // 静态资源与 SPA 路由
                 .requestMatchers("/", "/assets/**", "/favicon.ico", "/*.html", "/*.js", "/*.css", "/*.ico", "/*.svg", "/*.png", "/*.jpg").permitAll()
-                // SPA 前端路由，刷新页面时需要先返回 index.html，再由前端路由和 API 鉴权处理权限
                 .requestMatchers("/login", "/admin", "/admin/**", "/browse/**", "/viewer/**", "/settings").permitAll()
-                // Actuator
-                .requestMatchers("/actuator/**").permitAll()
-                // 其他所有请求需要认证
+                // 健康检查（生产可再收紧）
+                .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                // 含 proxy/stream/thumbnail 在内的 API 均需认证（JWT Header 或 ?token=）
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
