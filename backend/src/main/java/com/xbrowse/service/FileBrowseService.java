@@ -50,7 +50,16 @@ public class FileBrowseService {
         if (!refresh) {
             Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, path);
             if (directoryOpt.isPresent()) {
-                return listFromDbPaged(engineId, directoryOpt.get(), page, perPage, sort, mediaType);
+                List<FileItem> paged = listFromDbPaged(engineId, directoryOpt.get(), page, perPage, sort, mediaType);
+                // file_directory 有记录但 directory_id 未回填时可能为空，再走 parent_path 兼容
+                if (!paged.isEmpty() || dirFileRepository.countByDirectoryId(directoryOpt.get().getId()) > 0
+                        || fileDirectoryRepository.countByEngineIdAndParentId(engineId, directoryOpt.get().getId()) > 0) {
+                    return paged;
+                }
+            }
+            // 旧数据：仅 dir_file + parent_path（directory_id 为空 / file_directory 未建）
+            if (dirFileRepository.countByEngineIdAndParentPath(engineId, path) > 0) {
+                return listFromParentPathPaged(engineId, path, page, perPage, sort, mediaType);
             }
         }
 
@@ -63,18 +72,23 @@ public class FileBrowseService {
     public List<FileItem> searchFiles(Long engineId, String parentPath, String keyword, String mediaType) {
         parentPath = PathUtils.normalize(parentPath);
         pathAccessService.assertPathAllowed(engineId, parentPath);
-        Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, parentPath);
-        if (directoryOpt.isEmpty()) {
-            return List.of();
-        }
-        Long directoryId = directoryOpt.get().getId();
         List<FileItem> items = new ArrayList<>();
-        items.addAll(fileDirectoryRepository.searchByNameAndParentId(engineId, directoryId, keyword).stream()
-                .map(this::toFileItem)
-                .toList());
-        items.addAll(dirFileRepository.searchByNameAndDirectoryId(directoryId, keyword).stream()
-                .map(df -> toFileItem(df, engineId))
-                .toList());
+        Optional<FileDirectory> directoryOpt = fileDirectoryRepository.findByEngineIdAndPath(engineId, parentPath);
+        if (directoryOpt.isPresent()) {
+            Long directoryId = directoryOpt.get().getId();
+            items.addAll(fileDirectoryRepository.searchByNameAndParentId(engineId, directoryId, keyword).stream()
+                    .map(this::toFileItem)
+                    .toList());
+            items.addAll(dirFileRepository.searchByNameAndDirectoryId(directoryId, keyword).stream()
+                    .map(df -> toFileItem(df, engineId))
+                    .toList());
+        }
+        // 兼容旧数据
+        if (items.isEmpty()) {
+            items.addAll(dirFileRepository.searchByNameAndParentPath(engineId, parentPath, keyword).stream()
+                    .map(df -> toFileItem(df, engineId))
+                    .toList());
+        }
         return sortItems(filterByMediaType(items, mediaType), "name_asc");
     }
 
@@ -84,14 +98,18 @@ public class FileBrowseService {
             return null;
         }
         Optional<FileDirectory> opt = fileDirectoryRepository.findByEngineIdAndPath(engineId, path);
-        if (opt.isEmpty()) {
-            return null;
+        if (opt.isPresent()) {
+            FileDirectory directory = opt.get();
+            if (directory.getThumbnailUrl() != null && !directory.getThumbnailUrl().isEmpty()) {
+                return mediaAccessService.withAccessToken(directory.getThumbnailUrl());
+            }
+            String fromChildren = resolveDirThumbFromChildren(engineId, directory.getId());
+            if (fromChildren != null) {
+                return mediaAccessService.withAccessToken(fromChildren);
+            }
         }
-        FileDirectory directory = opt.get();
-        if (directory.getThumbnailUrl() != null && !directory.getThumbnailUrl().isEmpty()) {
-            return mediaAccessService.withAccessToken(directory.getThumbnailUrl());
-        }
-        return mediaAccessService.withAccessToken(resolveDirThumbFromChildren(engineId, directory.getId()));
+        // 兼容旧数据：从 parent_path 子文件取首张图
+        return mediaAccessService.withAccessToken(resolveDirThumbFromParentPath(engineId, path));
     }
 
     public boolean isImageFile(String fileName) {
@@ -103,7 +121,7 @@ public class FileBrowseService {
     }
 
     /**
-     * SQL 分页：目录在前 + 文件在后
+     * SQL 分页：目录在前 + 文件在后（新模型：file_directory + dir_file.directory_id）
      */
     private List<FileItem> listFromDbPaged(Long engineId, FileDirectory directory,
                                            int page, int perPage, String sort, String mediaType) {
@@ -130,6 +148,50 @@ public class FileBrowseService {
             }
         }
         return result;
+    }
+
+    /**
+     * SQL 分页：兼容旧数据（dir_file 按 parent_path，is_dir 区分目录/文件）
+     */
+    private List<FileItem> listFromParentPathPaged(Long engineId, String path,
+                                                   int page, int perPage, String sort, String mediaType) {
+        long dirCount = dirFileRepository.countDirsByEngineIdAndParentPath(engineId, path);
+        int offset = (page - 1) * perPage;
+        List<FileItem> result = new ArrayList<>(perPage);
+
+        if (offset < dirCount) {
+            int dirSkip = offset;
+            int dirTake = (int) Math.min(perPage, dirCount - dirSkip);
+            List<DirFile> dirs = dirFileRepository.pageDirsByParentPath(engineId, path, sort, dirTake, dirSkip);
+            for (DirFile df : dirs) {
+                result.add(toFileItem(df, engineId));
+            }
+        }
+
+        int remaining = perPage - result.size();
+        if (remaining > 0) {
+            int fileOffset = (int) Math.max(0, offset - dirCount);
+            List<DirFile> files = pageFilesByParentPath(engineId, path, sort, mediaType, fileOffset, remaining);
+            for (DirFile df : files) {
+                result.add(toFileItem(df, engineId));
+            }
+        }
+        return result;
+    }
+
+    private List<DirFile> pageFilesByParentPath(Long engineId, String parentPath, String sort,
+                                                String mediaType, int offset, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+        String type = mediaType == null ? "all" : mediaType.trim().toLowerCase(Locale.ROOT);
+        if ("image".equals(type)) {
+            return dirFileRepository.pageFilesByParentPathAndExtIn(engineId, parentPath, IMAGE_EXTS, sort, limit, offset);
+        }
+        if ("video".equals(type)) {
+            return dirFileRepository.pageFilesByParentPathAndExtIn(engineId, parentPath, VIDEO_EXTS, sort, limit, offset);
+        }
+        return dirFileRepository.pageFilesByParentPath(engineId, parentPath, sort, limit, offset);
     }
 
     private List<FileDirectory> pageChildDirs(Long engineId, Long parentId, String sort, int offset, int limit) {
@@ -259,6 +321,17 @@ public class FileBrowseService {
             if (sub.getThumbnailUrl() != null && !sub.getThumbnailUrl().isEmpty()) {
                 return sub.getThumbnailUrl();
             }
+        }
+        return null;
+    }
+
+    private String resolveDirThumbFromParentPath(Long engineId, String dirPath) {
+        List<DirFile> files = dirFileRepository.findImageFilesByParentPath(engineId, dirPath, IMAGE_EXTS);
+        for (DirFile df : files) {
+            if (df.getName() == null) {
+                continue;
+            }
+            return MediaTypes.proxyUrl(engineId, PathUtils.join(df.getParentPath(), df.getName()));
         }
         return null;
     }
