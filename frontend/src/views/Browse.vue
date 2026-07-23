@@ -178,6 +178,33 @@ const mediaType = ref(
   || 'all'
 )
 
+/** 从 /api/directories 匹配当前浏览根目录的 mediaType */
+async function resolveMediaTypeFromDirectories() {
+  try {
+    const res = await api.get('/api/directories')
+    if (res.code !== 200 || !Array.isArray(res.data)) return
+    const path = rootPath.value || currentPath.value || '/'
+    const dirs = res.data.filter((d) => Number(d.engineId) === engineId.value)
+    // 最长 path 前缀匹配，避免根目录抢匹配
+    const matched = dirs
+      .filter((d) => {
+        const p = d.path || '/'
+        return path === p || path.startsWith(p.endsWith('/') ? p : p + '/')
+      })
+      .sort((a, b) => (b.path || '').length - (a.path || '').length)[0]
+      || dirs.find((d) => d.path === path)
+    if (matched?.mediaType) {
+      mediaType.value = matched.mediaType
+      sessionStorage.setItem(mediaTypeKey.value, matched.mediaType)
+      if (route.query.mediaType !== matched.mediaType) {
+        router.replace({ query: browseQuery() })
+      }
+    }
+  } catch (e) {
+    console.error('解析 mediaType 失败:', e)
+  }
+}
+
 const files = ref([])
 const loading = ref(true)
 const loadingMore = ref(false)
@@ -602,9 +629,11 @@ watch(
   }
 )
 
-onMounted(() => {
+onMounted(async () => {
   loadScrollPositions()
   sessionStorage.setItem(storageKey.value, rootPath.value)
+  // 始终以目录配置为准，避免 query/session 残留 all
+  await resolveMediaTypeFromDirectories()
   sessionStorage.setItem(mediaTypeKey.value, mediaType.value || 'all')
   if (mediaType.value === 'video' && viewMode.value === 'waterfall') {
     viewMode.value = 'grid'

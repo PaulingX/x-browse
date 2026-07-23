@@ -109,7 +109,10 @@ function goBrowse(dir) {
   router.push({
     name: 'Browse',
     params: { engineId: dir.engineId },
-    query: { path: dir.path }
+    query: {
+      path: dir.path,
+      mediaType: dir.mediaType || 'all'
+    }
   })
 }
 
