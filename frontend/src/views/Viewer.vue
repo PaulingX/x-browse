@@ -127,15 +127,6 @@
               </span>
               <span class="time-display">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</span>
             </div>
-            <div class="controls-center" v-if="videoFiles.length > 1">
-              <span class="ctrl-btn" :class="{ disabled: !hasPrevVideo }" @click="prevVideo">
-                <van-icon name="arrow-left" size="18" color="white" />
-              </span>
-              <span class="video-pos-label">{{ videoPosLabel }}</span>
-              <span class="ctrl-btn" :class="{ disabled: !hasNextVideo }" @click="nextVideo">
-                <van-icon name="arrow-right" size="18" color="white" />
-              </span>
-            </div>
             <div class="controls-right">
               <span v-for="s in speeds" :key="s" class="speed-chip" :class="{ active: playbackSpeed === s }" @click="setSpeed(s)">
                 {{ s }}x
@@ -240,10 +231,6 @@ const videoIndexInList = computed(() => {
   if (!currentFile.value) return -1
   return videoFiles.value.findIndex((f) => f.name === currentFile.value.name)
 })
-const hasPrevVideo = computed(() => videoIndexInList.value > 0)
-const hasNextVideo = computed(() => videoIndexInList.value >= 0 && videoIndexInList.value < videoFiles.value.length - 1)
-const videoPosLabel = computed(() => videoIndexInList.value < 0 ? '' : `${videoIndexInList.value + 1} / ${videoFiles.value.length}`)
-
 let scrollTimer = null
 let toolbarTimer = null
 let progressDragging = false
@@ -804,10 +791,10 @@ onUnmounted(() => {
   display: flex; align-items: center; justify-content: space-between;
   padding: 6px 0 2px;
 }
-.controls-left, .controls-center, .controls-right {
+.controls-left, .controls-right {
   display: flex; align-items: center; gap: 8px;
 }
-.controls-center { flex: 1; justify-content: center; }
+.controls-right { margin-left: auto; }
 .time-display { color: rgba(255,255,255,0.9); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ctrl-btn {
   display: flex; align-items: center; justify-content: center;
@@ -817,7 +804,6 @@ onUnmounted(() => {
 .ctrl-btn:hover { background: rgba(255,255,255,0.15); }
 .ctrl-btn.disabled { opacity: 0.3; pointer-events: none; }
 .play-icon { display: block; }
-.video-pos-label { color: rgba(255,255,255,0.7); font-size: 12px; }
 .volume-control {
   display: flex; align-items: center; gap: 2px;
 }
@@ -881,7 +867,6 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .viewer-toolbar { height: 44px; padding: 0 12px; }
   .viewer-title { font-size: 14px; }
-  .controls-center { display: none; }
   .speed-chip { padding: 2px 6px; font-size: 10px; }
   .volume-slider { width: 56px; opacity: 1; pointer-events: auto; }
 }
