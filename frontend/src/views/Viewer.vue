@@ -41,7 +41,14 @@
     </template>
 
     <!-- 视频播放器（自定义控件） -->
-    <div v-else-if="isVideo" class="video-viewer" @mousemove="onVideoMouseMove" @mouseleave="hideToolbarTimer">
+    <div
+      v-else-if="isVideo"
+      ref="videoViewerRef"
+      class="video-viewer"
+      :class="orientationClass"
+      @mousemove="onVideoMouseMove"
+      @mouseleave="hideToolbarTimer"
+    >
       <div v-if="videoError" class="video-error">
         <p>{{ videoError }}</p>
         <van-button size="small" type="primary" plain @click="retryVideo">重试</van-button>
@@ -133,8 +140,25 @@
               <span v-for="s in speeds" :key="s" class="speed-chip" :class="{ active: playbackSpeed === s }" @click="setSpeed(s)">
                 {{ s }}x
               </span>
-              <span class="ctrl-btn" @click="toggleFullscreen">
-                <van-icon :name="isFullscreen ? 'minimize' : 'maximize'" size="18" color="white" />
+              <span class="ctrl-btn" :title="orientationTitle" @click="toggleOrientation">
+                <svg v-if="orientationMode === 'landscape'" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="1.8" aria-hidden="true">
+                  <rect x="2" y="6" width="20" height="12" rx="2" />
+                </svg>
+                <svg v-else-if="orientationMode === 'portrait'" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="1.8" aria-hidden="true">
+                  <rect x="6" y="2" width="12" height="20" rx="2" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="1.8" aria-hidden="true">
+                  <rect x="3" y="5" width="10" height="14" rx="1.5" transform="rotate(-20 8 12)" />
+                  <rect x="11" y="7" width="10" height="10" rx="1.5" />
+                </svg>
+              </span>
+              <span class="ctrl-btn" :title="isFullscreen ? '退出全屏' : '进入全屏'" @click="toggleFullscreen">
+                <svg v-if="isFullscreen" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="1.8" aria-hidden="true">
+                  <path d="M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="white" stroke-width="1.8" aria-hidden="true">
+                  <path d="M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
               </span>
             </div>
           </div>
@@ -169,6 +193,7 @@ const files = ref([])
 const loading = ref(true)
 const showToolbar = ref(true)
 const videoRef = ref(null)
+const videoViewerRef = ref(null)
 const scrollContainer = ref(null)
 const swipeLayer = ref(null)
 const progressBarRef = ref(null)
@@ -185,10 +210,23 @@ const currentTime = ref(0)
 const duration = ref(0)
 const bufferedPercent = ref(0)
 const isFullscreen = ref(false)
+// auto | landscape | portrait
+const orientationMode = ref(localStorage.getItem('xbrowse_video_orientation') || 'auto')
 const seekPreview = ref({ visible: false, left: 0, time: '' })
 const volume = ref(Number(localStorage.getItem('xbrowse_video_volume') ?? 1))
 const isMuted = ref(localStorage.getItem('xbrowse_video_muted') === '1')
 let volumeBeforeMute = volume.value > 0 ? volume.value : 1
+
+const orientationClass = computed(() => {
+  if (orientationMode.value === 'landscape') return 'orient-landscape'
+  if (orientationMode.value === 'portrait') return 'orient-portrait'
+  return 'orient-auto'
+})
+const orientationTitle = computed(() => {
+  if (orientationMode.value === 'landscape') return '横屏（点击切换竖屏）'
+  if (orientationMode.value === 'portrait') return '竖屏（点击切换自动）'
+  return '自动（点击切换横屏）'
+})
 
 const currentFile = computed(() => files.value[currentIndex.value])
 const isImage = computed(() => currentFile.value && isImageExt(currentFile.value.ext))
@@ -361,19 +399,48 @@ function seekToTouch(e) {
   currentTime.value = videoRef.value.currentTime
 }
 
-// 全屏
+// 全屏（整块播放器容器，保留自定义控件）
 function toggleFullscreen() {
-  const el = videoRef.value
+  const el = videoViewerRef.value || videoRef.value
   if (!el) return
   if (document.fullscreenElement) {
-    document.exitFullscreen()
+    document.exitFullscreen?.()
   } else {
-    (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el)
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen
+    req?.call(el)?.catch?.(() => {
+      // 部分浏览器不允许非用户手势触发，静默失败
+    })
   }
 }
 
 function onFullscreenChange() {
   isFullscreen.value = !!document.fullscreenElement
+}
+
+// 横竖屏：auto → landscape → portrait → auto
+function toggleOrientation() {
+  const order = ['auto', 'landscape', 'portrait']
+  const idx = order.indexOf(orientationMode.value)
+  orientationMode.value = order[(idx + 1) % order.length]
+  localStorage.setItem('xbrowse_video_orientation', orientationMode.value)
+  applyScreenOrientation()
+  showToolbarTemporarily()
+}
+
+async function applyScreenOrientation() {
+  const so = screen.orientation
+  if (!so || typeof so.lock !== 'function') return
+  try {
+    if (orientationMode.value === 'landscape') {
+      await so.lock('landscape')
+    } else if (orientationMode.value === 'portrait') {
+      await so.lock('portrait')
+    } else {
+      so.unlock?.()
+    }
+  } catch (_) {
+    // 多数桌面浏览器不支持 lock，仅用 CSS 布局兜底
+  }
 }
 
 // 工具栏自动隐藏
@@ -438,6 +505,10 @@ function handleKeydown(e) {
       case 'f':
         e.preventDefault()
         toggleFullscreen()
+        break
+      case 'r':
+        e.preventDefault()
+        toggleOrientation()
         break
       case ',':
       case '<':
@@ -624,11 +695,13 @@ onMounted(() => {
   loadFiles()
   viewerPage.value?.focus()
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  applyScreenOrientation()
 })
 
 onUnmounted(() => {
   releaseVideo()
   document.removeEventListener('fullscreenchange', onFullscreenChange)
+  try { screen.orientation?.unlock?.() } catch (_) { /* ignore */ }
   if (scrollTimer) clearTimeout(scrollTimer)
   if (wheelTimer) clearTimeout(wheelTimer)
   if (toolbarTimer) clearTimeout(toolbarTimer)
@@ -672,11 +745,49 @@ onUnmounted(() => {
 .video-viewer {
   width: 100%; height: 100%;
   display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
-  position: relative;
+  position: relative; background: #000; overflow: hidden;
+}
+.video-viewer:fullscreen,
+.video-viewer:-webkit-full-screen {
+  width: 100vw; height: 100vh; background: #000;
 }
 .video-player {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-  object-fit: contain; background: #000; cursor: pointer;
+  object-fit: contain; background: #000; cursor: pointer; transition: transform 0.25s ease;
+}
+/* 横竖屏：不支持 Screen Orientation 时用 CSS 旋转兜底 */
+.video-viewer.orient-auto .video-player,
+.video-viewer.orient-landscape .video-player,
+.video-viewer.orient-portrait .video-player {
+  object-fit: contain;
+}
+/* 当前视口偏竖时强制横屏观看：整块播放区旋转 90° */
+@media (orientation: portrait) {
+  .video-viewer.orient-landscape {
+    position: fixed;
+    top: 50%; left: 50%;
+    width: 100vh; height: 100vw;
+    transform: translate(-50%, -50%) rotate(90deg);
+    transform-origin: center center;
+  }
+  .video-viewer.orient-landscape:fullscreen,
+  .video-viewer.orient-landscape:-webkit-full-screen {
+    width: 100vh; height: 100vw;
+  }
+}
+/* 当前视口偏横时强制竖屏观看：整块播放区旋转 -90° */
+@media (orientation: landscape) {
+  .video-viewer.orient-portrait {
+    position: fixed;
+    top: 50%; left: 50%;
+    width: 100vh; height: 100vw;
+    transform: translate(-50%, -50%) rotate(-90deg);
+    transform-origin: center center;
+  }
+  .video-viewer.orient-portrait:fullscreen,
+  .video-viewer.orient-portrait:-webkit-full-screen {
+    width: 100vh; height: 100vw;
+  }
 }
 .video-error {
   color: rgba(255,255,255,0.85); text-align: center;
