@@ -52,11 +52,12 @@
           <div class="file-icon">
             <img
               v-if="item.isDir && dirPreviewSrc(item)"
-              :src="dirPreviewSrc(item)"
+              :src="getCachedSrc(dirPreviewSrc(item)) || dirPreviewSrc(item)"
               :alt="item.name"
               class="file-thumbnail dir-preview"
               loading="lazy"
               decoding="async"
+              @load="onThumbLoad($event, dirPreviewSrc(item))"
               @error="onDirThumbError($event, item)"
             />
             <van-icon
@@ -67,7 +68,7 @@
             />
             <img
               v-else-if="isImage(item.ext) && listThumbSrc(item)"
-              :src="getCachedImage(listThumbSrc(item))?.src || listThumbSrc(item)"
+              :src="thumbSrc(item)"
               :alt="item.name"
               class="file-thumbnail"
               loading="lazy"
@@ -77,11 +78,12 @@
             />
             <div v-else-if="isVideo(item.ext) && listThumbSrc(item)" class="video-thumb-wrap">
               <img
-                :src="listThumbSrc(item)"
+                :src="thumbSrc(item)"
                 :alt="item.name"
                 class="file-thumbnail"
                 loading="lazy"
                 decoding="async"
+                @load="onThumbLoad($event, listThumbSrc(item))"
                 @error="handleImgError"
               />
               <van-icon name="play-circle-o" class="video-play-badge" />
@@ -114,10 +116,11 @@
         @click="openViewer(item)"
       >
         <img
-          :src="listThumbSrc(item)"
+          :src="thumbSrc(item)"
           :alt="item.name"
           loading="lazy"
           decoding="async"
+          @load="onThumbLoad($event, listThumbSrc(item))"
         />
       </div>
     </div>
@@ -150,6 +153,14 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 import { isImage, isVideo, formatSize, getFileIcon, getFileColor } from '@/utils/file'
+import {
+  getCachedSrc,
+  preloadImages as cachePreloadImages,
+  clearImageCache,
+  startCacheTimer,
+  stopCacheTimer,
+  rememberLoaded
+} from '@/utils/imageCache'
 
 const router = useRouter()
 const route = useRoute()
@@ -280,7 +291,7 @@ async function loadMore() {
   loadingMore.value = true
   page.value++
   try {
-    await fetchPage(currentPath.value, page.value, { append: true })
+    await fetchPage(currentPath.value, page.value, { append: true, preload: true })
   } finally {
     loadingMore.value = false
   }
@@ -358,6 +369,8 @@ async function restorePath(path, { showBack = false, preload = false } = {}) {
 function goBack() {
   searchText.value = ''
   searchResults.value = []
+  // 返回上级：清空当前目录图片内存缓存
+  clearImageCache()
   if (currentPath.value === rootPath.value) {
     showBackButton.value = false
     sessionStorage.removeItem(storageKey.value)
@@ -413,30 +426,6 @@ function handleImgError(e) {
   e.target.style.display = 'none'
 }
 
-function onThumbLoad(e, url) {
-  if (url && !imageCache.has(url)) {
-    const img = e.target
-    const memory = estimateImageMemory(img)
-    if (cacheMemoryUsage + memory > MAX_CACHE_MEMORY) {
-      evictOldestCache(memory)
-    }
-    imageCache.set(url, { img: img.cloneNode(true), memory, timestamp: Date.now() })
-    cacheMemoryUsage += memory
-    evictOverBudgetCache()
-  }
-}
-
-const imageCache = new Map()
-const MAX_CACHE_MEMORY = 100 * 1024 * 1024
-const CACHE_TTL = 30 * 60 * 1000
-/** 列表预加载并发上限，避免弱网挤爆 */
-const PRELOAD_CONCURRENCY = 4
-const PRELOAD_BATCH = 6
-let cacheMemoryUsage = 0
-let cacheTimer = null
-let preloadActive = 0
-const preloadQueue = []
-
 /** 列表展示用缩略图：优先 thumbnailUrl，回退 url */
 function listThumbSrc(item) {
   if (!item) return ''
@@ -450,7 +439,6 @@ function dirPreviewSrc(item) {
 }
 
 function onDirThumbError(e, item) {
-  // 失败后清掉错误地址，避免一直空白；回退文件夹图标
   if (item?.path && dirThumbnails.value[item.path]) {
     const next = { ...dirThumbnails.value }
     delete next[item.path]
@@ -459,116 +447,22 @@ function onDirThumbError(e, item) {
   e.target.style.display = 'none'
 }
 
-function estimateImageMemory(img) {
-  if (img.naturalWidth && img.naturalHeight) {
-    return img.naturalWidth * img.naturalHeight * 4
-  }
-  return 200 * 1024
+function thumbSrc(item) {
+  const url = listThumbSrc(item)
+  return getCachedSrc(url) || url
 }
 
-function evictExpiredCache() {
-  const now = Date.now()
-  for (const [url, entry] of imageCache) {
-    if (now - entry.timestamp > CACHE_TTL) {
-      cacheMemoryUsage -= entry.memory
-      imageCache.delete(url)
-    }
-  }
-}
-
-function evictOldestCache(needed) {
-  const entries = [...imageCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)
-  for (const [url, entry] of entries) {
-    if (cacheMemoryUsage - entry.memory + needed <= MAX_CACHE_MEMORY || imageCache.size <= 1) break
-    cacheMemoryUsage -= entry.memory
-    imageCache.delete(url)
-  }
-}
-
-function evictOverBudgetCache() {
-  if (cacheMemoryUsage <= MAX_CACHE_MEMORY) return
-  const entries = [...imageCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp)
-  for (const [url, entry] of entries) {
-    if (cacheMemoryUsage <= MAX_CACHE_MEMORY * 0.8) break
-    cacheMemoryUsage -= entry.memory
-    imageCache.delete(url)
-  }
-}
-
-function getCachedImage(url) {
-  if (!url) return null
-  const entry = imageCache.get(url)
-  if (entry) {
-    entry.timestamp = Date.now()
-    return entry.img
-  }
-  return null
-}
-
-function cacheImage(url) {
-  if (!url || imageCache.has(url)) return
-  evictExpiredCache()
-  const img = new Image()
-  img.decoding = 'async'
-  img.onload = () => {
-    const memory = estimateImageMemory(img)
-    if (cacheMemoryUsage + memory > MAX_CACHE_MEMORY) {
-      evictOldestCache(memory)
-    }
-    imageCache.set(url, { img, memory, timestamp: Date.now() })
-    cacheMemoryUsage += memory
-    evictOverBudgetCache()
-    preloadActive = Math.max(0, preloadActive - 1)
-    pumpPreloadQueue()
-  }
-  img.onerror = () => {
-    preloadActive = Math.max(0, preloadActive - 1)
-    pumpPreloadQueue()
-  }
-  img.src = url
-}
-
-function pumpPreloadQueue() {
-  while (preloadActive < PRELOAD_CONCURRENCY && preloadQueue.length > 0) {
-    const url = preloadQueue.shift()
-    if (!url || imageCache.has(url)) continue
-    preloadActive++
-    cacheImage(url)
-  }
-}
-
-function clearImageCache() {
-  for (const [, entry] of imageCache) {
-    entry.img.src = ''
-  }
-  imageCache.clear()
-  cacheMemoryUsage = 0
-  preloadQueue.length = 0
-  preloadActive = 0
-  if (cacheTimer) {
-    clearInterval(cacheTimer)
-    cacheTimer = null
-  }
-}
-
-function preloadImages(urls) {
-  if (!urls || urls.length === 0) return
-  evictExpiredCache()
-  const toLoad = urls
-    .filter(url => url && !imageCache.has(url) && !preloadQueue.includes(url))
-    .slice(0, PRELOAD_BATCH)
-  preloadQueue.push(...toLoad)
-  pumpPreloadQueue()
-  evictOverBudgetCache()
+function onThumbLoad(e, url) {
+  rememberLoaded(url, e?.target)
 }
 
 function preloadPageImages() {
-  // 只预加载列表缩略图，不预加载原图
   const urls = files.value
-    .filter(f => !f.isDir && isImage(f.ext))
-    .map(f => listThumbSrc(f))
+    .filter((f) => !f.isDir && (isImage(f.ext) || isVideo(f.ext)))
+    .map((f) => listThumbSrc(f))
     .filter(Boolean)
-  preloadImages(urls)
+  const dirUrls = Object.values(dirThumbnails.value || {}).filter(Boolean)
+  cachePreloadImages([...urls, ...dirUrls])
 }
 
 function preloadNextPage() {
@@ -576,23 +470,15 @@ function preloadNextPage() {
   const nextPage = page.value + 1
   api.get('/api/files/list', {
     params: buildListParams(currentPath.value, nextPage)
-  }).then(res => {
+  }).then((res) => {
     if (res.code === 200) {
       const urls = res.data
-        .filter(f => !f.isDir && isImage(f.ext))
-        .map(f => listThumbSrc(f))
+        .filter((f) => !f.isDir && (isImage(f.ext) || isVideo(f.ext)))
+        .map((f) => listThumbSrc(f))
         .filter(Boolean)
-      preloadImages(urls)
+      cachePreloadImages(urls)
     }
   }).catch(() => {})
-}
-
-function startCacheTimer() {
-  if (cacheTimer) clearInterval(cacheTimer)
-  cacheTimer = setInterval(() => {
-    evictExpiredCache()
-    evictOverBudgetCache()
-  }, 60 * 1000)
 }
 
 async function fetchDirThumbnails(dirPaths) {
@@ -611,6 +497,7 @@ async function fetchDirThumbnails(dirPaths) {
         if (url) merged[path] = url
       }
       dirThumbnails.value = merged
+      cachePreloadImages(Object.values(merged).filter(Boolean))
     }
   } catch (e) {
     console.error('加载目录预览图失败:', e)
@@ -725,6 +612,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearImageCache()
+  stopCacheTimer()
   if (dirObserver) dirObserver.disconnect()
   if (scrollObserver) scrollObserver.disconnect()
   if (dirObserverTimer) clearTimeout(dirObserverTimer)

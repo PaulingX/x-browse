@@ -169,6 +169,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { showToast } from 'vant'
 import api from '@/api'
 import { isImage as isImageExt, isVideo as isVideoExt, isBrowserPlayableVideo } from '@/utils/file'
+import { getCachedSrc, cacheImage, rememberLoaded, preloadImages } from '@/utils/imageCache'
 
 const router = useRouter()
 const route = useRoute()
@@ -589,6 +590,12 @@ async function loadFiles() {
     } else {
       currentIndex.value = Math.min(Math.max(0, currentIndex.value), Math.max(0, allFiles.length - 1))
     }
+    // 后台预缓存附近图片原图/缩略图
+    const nearby = allFiles
+      .filter((f) => isImageExt(f.ext))
+      .slice(Math.max(0, currentIndex.value - 2), currentIndex.value + 8)
+      .flatMap((f) => [f.thumbnailUrl, f.url].filter(Boolean))
+    preloadImages(nearby, { limit: 12 })
     nextTick(() => {
       if (isImage.value && viewMode.value === 'scroll') scrollToIndex(currentIndex.value)
     })
@@ -640,20 +647,29 @@ function goBack() { releaseVideo(); router.back() }
 function imageDisplaySrc(file, index) {
   if (!file) return ''
   const key = file.path || file.name || String(index)
-  return fullImageReady.value.has(key) && file.url ? file.url : (file.thumbnailUrl || file.url || '')
+  const url = fullImageReady.value.has(key) && file.url ? file.url : (file.thumbnailUrl || file.url || '')
+  return getCachedSrc(url) || url
 }
 
 function onFullImageLoad(file, index) {
   if (!file) return
   const key = file.path || file.name || String(index)
-  if (fullImageReady.value.has(key)) return
+  if (file.thumbnailUrl) rememberLoaded(file.thumbnailUrl)
+  if (fullImageReady.value.has(key)) {
+    if (file.url) rememberLoaded(file.url)
+    return
+  }
   if (file.url && file.thumbnailUrl && file.url !== file.thumbnailUrl) {
-    const img = new Image()
-    img.decoding = 'async'
-    img.onload = () => { const s = new Set(fullImageReady.value); s.add(key); fullImageReady.value = s }
-    img.src = file.url
+    cacheImage(file.url).then(() => {
+      const s = new Set(fullImageReady.value)
+      s.add(key)
+      fullImageReady.value = s
+    })
   } else if (file.url) {
-    const s = new Set(fullImageReady.value); s.add(key); fullImageReady.value = s
+    rememberLoaded(file.url)
+    const s = new Set(fullImageReady.value)
+    s.add(key)
+    fullImageReady.value = s
   }
 }
 
