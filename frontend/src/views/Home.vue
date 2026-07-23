@@ -87,18 +87,15 @@ const filteredDirectories = computed(() => {
   )
 })
 
-// 加载目录列表
+// 加载目录列表（后端已按权限过滤；directoryIds 作兼容兜底）
 async function loadDirectories() {
   try {
+    if (!userStore.userInfo?.directoryIds && !userStore.isAdmin) {
+      await userStore.fetchUserInfo()
+    }
     const res = await api.get('/api/directories')
     if (res.code === 200) {
-      // 根据用户权限过滤目录
-      if (userStore.isAdmin) {
-        directories.value = res.data
-      } else {
-        const userDirs = userStore.userInfo?.directoryIds || []
-        directories.value = res.data.filter((dir) => userDirs.includes(dir.id))
-      }
+      directories.value = res.data || []
     }
   } catch (error) {
     console.error('加载目录失败:', error)

@@ -11,12 +11,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 浏览目录管理服务
  * <p>
  * 管理管理员配置的浏览根路径及各自独立的同步计划。
+ * 普通用户仅能看到被授权的目录；管理员可看全部。
  */
 @Slf4j
 @Service
@@ -26,13 +29,37 @@ public class BrowseDirectoryService {
     private final BrowseDirectoryRepository directoryRepository;
     private final UserDirectoryRepository userDirectoryRepository;
     private final DirFileSyncService dirFileSyncService;
+    private final UserService userService;
 
+    /**
+     * 按当前用户权限返回目录列表
+     */
     public List<BrowseDirectoryDTO> listDirectories() {
+        List<BrowseDirectoryDTO> all = directoryRepository.findAll().stream().map(this::toDTO).toList();
+        return filterByCurrentUser(all);
+    }
+
+    /**
+     * 按引擎 + 当前用户权限返回目录列表
+     */
+    public List<BrowseDirectoryDTO> listByEngineId(Long engineId) {
+        List<BrowseDirectoryDTO> all = directoryRepository.findByEngineId(engineId).stream().map(this::toDTO).toList();
+        return filterByCurrentUser(all);
+    }
+
+    /**
+     * 管理端需要完整目录（仅管理员调用场景，如用户权限配置）
+     */
+    public List<BrowseDirectoryDTO> listAllDirectories() {
         return directoryRepository.findAll().stream().map(this::toDTO).toList();
     }
 
-    public List<BrowseDirectoryDTO> listByEngineId(Long engineId) {
-        return directoryRepository.findByEngineId(engineId).stream().map(this::toDTO).toList();
+    private List<BrowseDirectoryDTO> filterByCurrentUser(List<BrowseDirectoryDTO> directories) {
+        if (userService.isCurrentUserAdmin()) {
+            return directories;
+        }
+        Set<Long> allowed = new HashSet<>(userService.getCurrentUserDirectoryIds());
+        return directories.stream().filter(d -> allowed.contains(d.getId())).toList();
     }
 
     /**

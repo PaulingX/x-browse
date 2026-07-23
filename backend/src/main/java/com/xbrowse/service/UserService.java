@@ -132,7 +132,7 @@ public class UserService {
     }
 
     /**
-     * 当前用户信息（不含 directoryIds，保持 /api/auth/me 原有字段）
+     * 当前用户信息（含 directoryIds，供前端展示可访问目录）
      */
     public UserDTO toCurrentUserDTO(User user) {
         UserDTO dto = new UserDTO();
@@ -141,16 +141,30 @@ public class UserService {
         dto.setDisplayName(user.getDisplayName());
         dto.setAdmin(user.getAdmin());
         dto.setEnabled(user.getEnabled());
+        dto.setDirectoryIds(getUserDirectoryIds(user.getId()));
         return dto;
     }
 
     /**
-     * 管理端用户 DTO（含最后登录时间与目录权限）
+     * 管理端用户 DTO（额外含最后登录时间）
      */
     private UserDTO toDTO(User user) {
         UserDTO dto = toCurrentUserDTO(user);
         dto.setLastLoginTime(user.getLastLoginTime());
-        dto.setDirectoryIds(getUserDirectoryIds(user.getId()));
         return dto;
+    }
+
+    /**
+     * 当前用户是否管理员
+     */
+    public boolean isCurrentUserAdmin() {
+        return Boolean.TRUE.equals(getCurrentUser().getAdmin());
+    }
+
+    /**
+     * 当前用户被授权的浏览目录 ID（管理员不依赖此列表）
+     */
+    public List<Long> getCurrentUserDirectoryIds() {
+        return getUserDirectoryIds(getCurrentUser().getId());
     }
 }

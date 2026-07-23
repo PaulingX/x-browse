@@ -21,9 +21,15 @@ export const useUserStore = defineStore('user', () => {
       const res = await api.post('/api/auth/login', { username, password })
       if (res.code === 200) {
         token.value = res.data.token
-        userInfo.value = res.data
         localStorage.setItem('token', res.data.token)
-        localStorage.setItem('userInfo', JSON.stringify(res.data))
+        // 登录接口不含 directoryIds，再拉一次 /me
+        userInfo.value = {
+          username: res.data.username,
+          displayName: res.data.displayName,
+          admin: res.data.admin
+        }
+        localStorage.setItem('userInfo', JSON.stringify(userInfo.value))
+        await fetchUserInfo()
         return true
       }
       return false
@@ -41,13 +47,14 @@ export const useUserStore = defineStore('user', () => {
     localStorage.removeItem('userInfo')
   }
 
-  // 获取用户信息
+  // 获取用户信息（含 directoryIds）
   async function fetchUserInfo() {
     if (!token.value) return
     try {
       const res = await api.get('/api/auth/me')
       if (res.code === 200) {
         userInfo.value = res.data
+        localStorage.setItem('userInfo', JSON.stringify(res.data))
       }
     } catch (error) {
       console.error('获取用户信息失败:', error)
