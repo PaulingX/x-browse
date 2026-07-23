@@ -30,14 +30,15 @@
             v-for="item in virtualItems"
             :key="item.key"
             class="image-item virtual-item"
-            :style="{ top: item.top + 'px', height: itemHeight + 'px' }"
+            :style="{ top: item.top + 'px' }"
+            :data-img-index="item.index"
           >
             <img
               :src="imageDisplaySrc(item.file, item.index)"
               :alt="item.file.name"
               class="scroll-image"
               @error="onImageError"
-              @load="onFullImageLoad(item.file, item.index)"
+              @load="onScrollImageLoad($event, item.file, item.index)"
               loading="lazy"
               decoding="async"
             />
@@ -210,36 +211,113 @@ const viewMode = ref('scroll')
 const videoError = ref('')
 const videoRetryKey = ref(0)
 const fullImageReady = ref(new Set())
-const itemHeight = ref(Math.round(window.innerHeight || 800))
 const scrollTop = ref(0)
 const viewportHeight = ref(Math.round(window.innerHeight || 800))
+const viewportWidth = ref(Math.round(window.innerWidth || 400))
+/** 每张图实测高度；未加载时用估算值 */
+const imageHeights = ref([])
 const VIRTUAL_OVERSCAN = 2
+/** 未加载图片的默认估算高度（宽图偏矮，避免大空隙） */
+const EST_HEIGHT_RATIO = 1.4
 let progressSaveTimer = null
 let scrollSyncing = false
 
 const imageFiles = computed(() => files.value.filter((f) => isImageExt(f.ext)))
 
-const virtualTotalHeight = computed(() => imageFiles.value.length * itemHeight.value)
+function defaultImageHeight() {
+  return Math.max(120, Math.round((viewportWidth.value || 400) * EST_HEIGHT_RATIO))
+}
+
+function heightAt(i) {
+  const h = imageHeights.value[i]
+  return h > 0 ? h : defaultImageHeight()
+}
+
+/** 前缀高度：offsets[i] = 第 i 张图顶部 y */
+const imageOffsets = computed(() => {
+  const n = imageFiles.value.length
+  const offsets = new Array(n + 1)
+  offsets[0] = 0
+  for (let i = 0; i < n; i++) {
+    offsets[i + 1] = offsets[i] + heightAt(i)
+  }
+  return offsets
+})
+
+const virtualTotalHeight = computed(() => {
+  const o = imageOffsets.value
+  return o.length ? o[o.length - 1] : 0
+})
+
+function findIndexByScroll(y) {
+  const o = imageOffsets.value
+  if (o.length <= 1) return 0
+  let lo = 0
+  let hi = o.length - 2
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (o[mid] <= y) lo = mid
+    else hi = mid - 1
+  }
+  return lo
+}
 
 const virtualItems = computed(() => {
   const list = imageFiles.value
-  const h = itemHeight.value || 1
-  if (!list.length || h <= 0) return []
-  const start = Math.max(0, Math.floor(scrollTop.value / h) - VIRTUAL_OVERSCAN)
-  const visible = Math.ceil((viewportHeight.value || h) / h) + VIRTUAL_OVERSCAN * 2
-  const end = Math.min(list.length, start + visible)
+  const o = imageOffsets.value
+  if (!list.length) return []
+  const startY = Math.max(0, scrollTop.value)
+  const endY = startY + (viewportHeight.value || 800)
+  let start = Math.max(0, findIndexByScroll(startY) - VIRTUAL_OVERSCAN)
+  let end = Math.min(list.length, findIndexByScroll(endY) + 1 + VIRTUAL_OVERSCAN)
+  if (end <= start) end = Math.min(list.length, start + 1)
   const items = []
   for (let i = start; i < end; i++) {
     const file = list[i]
     items.push({
       key: file.path || file.name || String(i),
       index: i,
-      top: i * h,
+      top: o[i],
       file
     })
   }
   return items
 })
+
+function ensureImageHeights(count) {
+  if (imageHeights.value.length === count) return
+  const next = new Array(count)
+  for (let i = 0; i < count; i++) {
+    next[i] = imageHeights.value[i] > 0 ? imageHeights.value[i] : 0
+  }
+  imageHeights.value = next
+}
+
+function setImageHeight(index, height) {
+  if (index < 0) return
+  const h = Math.max(1, Math.round(height))
+  if (imageHeights.value[index] === h) return
+  const next = imageHeights.value.slice()
+  while (next.length <= index) next.push(0)
+  next[index] = h
+  imageHeights.value = next
+}
+
+function onScrollImageLoad(e, file, index) {
+  const img = e?.target
+  if (img) {
+    // 按容器宽度等比缩放后的实际渲染高度
+    const nw = img.naturalWidth || 0
+    const nh = img.naturalHeight || 0
+    const cw = scrollContainer.value?.clientWidth || viewportWidth.value || window.innerWidth || 1
+    if (nw > 0 && nh > 0) {
+      setImageHeight(index, (nh / nw) * cw)
+    } else if (img.offsetHeight > 0) {
+      setImageHeight(index, img.offsetHeight)
+    }
+  }
+  onFullImageLoad(file, index)
+}
 
 // 视频状态
 const isPlaying = ref(false)
@@ -681,6 +759,7 @@ async function loadFiles() {
       }
     }
     files.value = allFiles
+    ensureImageHeights(allFiles.filter((f) => isImageExt(f.ext)).length)
     if (targetFile.value) {
       const idx = allFiles.findIndex((f) => f.name === targetFile.value)
       currentIndex.value = idx >= 0 ? idx : 0
@@ -701,7 +780,7 @@ async function loadFiles() {
   await nextTick()
   await nextTick()
   if (isImage.value && viewMode.value === 'scroll') {
-    measureItemHeight()
+    measureViewport()
     scrollToIndex(currentIndex.value)
   }
 }
@@ -712,24 +791,25 @@ async function toggleViewMode() {
   if (viewMode.value === 'scroll') {
     await nextTick()
     await nextTick()
-    measureItemHeight()
+    measureViewport()
     scrollToIndex(prevIndex)
   }
 }
 
+function mediaIndexToImageIndex(index) {
+  const file = files.value[index]
+  if (file && isImageExt(file.ext)) {
+    const imgIdx = imageFiles.value.findIndex((f) => (f.path || f.name) === (file.path || file.name))
+    return imgIdx >= 0 ? imgIdx : 0
+  }
+  return Math.min(Math.max(0, index), Math.max(0, imageFiles.value.length - 1))
+}
+
 function scrollToIndex(index) {
   if (!scrollContainer.value) return
-  measureItemHeight()
-  // 滚动列表只含图片，index 需映射到 imageFiles
-  const file = files.value[index]
-  let imgIdx = index
-  if (file && isImageExt(file.ext)) {
-    imgIdx = imageFiles.value.findIndex((f) => (f.path || f.name) === (file.path || file.name))
-    if (imgIdx < 0) imgIdx = 0
-  } else {
-    imgIdx = Math.min(Math.max(0, index), Math.max(0, imageFiles.value.length - 1))
-  }
-  const top = Math.max(0, imgIdx) * itemHeight.value
+  measureViewport()
+  const imgIdx = mediaIndexToImageIndex(index)
+  const top = imageOffsets.value[imgIdx] || 0
   scrollSyncing = true
   scrollContainer.value.scrollTo({ top, behavior: 'auto' })
   scrollTop.value = top
@@ -740,23 +820,31 @@ function onScroll() {
   if (!scrollContainer.value || scrollSyncing) return
   scrollTop.value = scrollContainer.value.scrollTop
   viewportHeight.value = scrollContainer.value.clientHeight || window.innerHeight
-  const h = itemHeight.value || 1
-  const imgIdx = Math.min(imageFiles.value.length - 1, Math.max(0, Math.round(scrollTop.value / h)))
+  const imgIdx = findIndexByScroll(scrollTop.value + (viewportHeight.value || 0) * 0.35)
   const file = imageFiles.value[imgIdx]
   if (!file) return
   const mediaIdx = files.value.findIndex((f) => (f.path || f.name) === (file.path || file.name))
   if (mediaIdx >= 0 && mediaIdx !== currentIndex.value) currentIndex.value = mediaIdx
 }
 
-function measureItemHeight() {
-  const h = scrollContainer.value?.clientHeight || window.innerHeight || 800
-  itemHeight.value = Math.round(h)
+function measureViewport() {
+  const el = scrollContainer.value
+  const h = el?.clientHeight || window.innerHeight || 800
+  const w = el?.clientWidth || window.innerWidth || 400
   viewportHeight.value = Math.round(h)
+  viewportWidth.value = Math.round(w)
 }
 
 function onWindowResize() {
   const prevIdx = currentIndex.value
-  measureItemHeight()
+  // 宽度变化后按比例重算已测高度
+  const oldW = viewportWidth.value || 1
+  measureViewport()
+  const newW = viewportWidth.value || 1
+  if (oldW > 0 && newW > 0 && Math.abs(newW - oldW) > 1) {
+    const scale = newW / oldW
+    imageHeights.value = imageHeights.value.map((h) => (h > 0 ? Math.round(h * scale) : 0))
+  }
   if (viewMode.value === 'scroll' && isImage.value) {
     nextTick(() => scrollToIndex(prevIdx))
   }
@@ -837,7 +925,7 @@ onMounted(() => {
   viewerPage.value?.focus()
   document.addEventListener('fullscreenchange', onFullscreenChange)
   window.addEventListener('resize', onWindowResize)
-  measureItemHeight()
+  measureViewport()
   applyScreenOrientation()
 })
 
@@ -878,12 +966,12 @@ onUnmounted(() => {
   color: rgba(255,255,255,0.7); font-size: 15px;
 }
 
-/* 图片 */
-.image-scroll { width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; position: relative; }
+/* 图片：滚动模式无缝拼接，无固定槽位黑边 */
+.image-scroll { width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; position: relative; background: #000; }
 .virtual-spacer { position: relative; width: 100%; }
-.image-item { width: 100%; display: flex; align-items: center; justify-content: center; }
+.image-item { width: 100%; line-height: 0; font-size: 0; }
 .image-item.virtual-item { position: absolute; left: 0; right: 0; }
-.scroll-image { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.scroll-image { width: 100%; height: auto; display: block; vertical-align: top; background: #000; }
 .image-swipe-view { width: 100%; height: 100vh; position: relative; overflow: hidden; }
 .swipe-image-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
 .swipe-image { max-width: 100%; max-height: 100%; object-fit: contain; }
