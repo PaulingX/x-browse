@@ -53,6 +53,7 @@ public class DirFileSyncService {
     private final AlistEngineService engineService;
     private final TransactionTemplate txTemplate;
     private final AppConfig appConfig;
+    private final ThumbnailCacheService thumbnailCacheService;
 
     /** 防止同一浏览目录并发同步 */
     private final ConcurrentHashMap<Long, Boolean> syncingIds = new ConcurrentHashMap<>();
@@ -238,8 +239,10 @@ public class DirFileSyncService {
         log.info("目录内容: engineId={}, path={}, items={}", engineId, path, items.size());
 
         Long directoryId = persistDirListing(engineId, path, parentId, items);
-        // 列表/目录预览直接用原图代理，不生成缩略图
-        String dirThumbnail = resolveDirThumbnail(engineId, path, items, client);
+        // 大于 500KB 的图片生成 WebP 缩略图（只压体积、不缩放），写回 dir_file.thumbnail_url
+        generateImageThumbnails(engineId, path, directoryId, client);
+
+        String dirThumbnail = resolveDirThumbnail(engineId, path, directoryId, items, client);
         if (dirThumbnail != null) {
             updateThumbnail(engineId, path, dirThumbnail);
         }
@@ -347,6 +350,7 @@ public class DirFileSyncService {
      */
         /**
      * 同步时为视频写入 coverUrl：同目录 basename 相同的图片优先 jpg/png。
+     * 若封面图已有 WebP 缩略图则优先用缩略图 URL。
      */
     private void applyVideoCoverUrls(Long engineId, String parentPath, List<DirFile> files) {
         if (files == null || files.isEmpty()) {
@@ -368,7 +372,7 @@ public class DirFileSyncService {
         }
         for (DirFile df : files) {
             if (df.getName() == null || !MediaTypes.isVideo(df.getName())) {
-                df.setCoverUrl(null);
+                // 非视频不强制清空 coverUrl（避免误伤）
                 continue;
             }
             DirFile cover = coverByBase.get(baseNameWithoutExt(df.getName()).toLowerCase(Locale.ROOT));
@@ -376,8 +380,66 @@ public class DirFileSyncService {
                 df.setCoverUrl(null);
                 continue;
             }
-            String coverPath = PathUtils.join(parentPath, cover.getName());
-            df.setCoverUrl(MediaTypes.proxyUrl(engineId, coverPath));
+            if (cover.getThumbnailUrl() != null && !cover.getThumbnailUrl().isEmpty()) {
+                df.setCoverUrl(cover.getThumbnailUrl());
+            } else {
+                String coverPath = PathUtils.join(parentPath, cover.getName());
+                df.setCoverUrl(MediaTypes.proxyUrl(engineId, coverPath));
+            }
+        }
+    }
+
+    /**
+     * 对本目录图片：体积 &gt; 500KB 时生成 WebP 缩略图（不缩放，只压体积），写入 dir_file.thumbnail_url。
+     * 小图不生成，列表回退原图代理。
+     */
+    private void generateImageThumbnails(Long engineId, String parentPath, Long directoryId, AlistClient client) {
+        if (directoryId == null || client == null) {
+            return;
+        }
+        List<DirFile> files = dirFileRepository.findByDirectoryId(directoryId);
+        if (files == null || files.isEmpty()) {
+            return;
+        }
+        int generated = 0;
+        int skipped = 0;
+        for (DirFile df : files) {
+            if (df.getName() == null || !MediaTypes.isImage(df.getName())) {
+                continue;
+            }
+            // 已有本地缩略图 URL 则跳过（避免重复下载转换）
+            if (df.getThumbnailUrl() != null && df.getThumbnailUrl().contains("/api/files/thumbnail/")) {
+                skipped++;
+                continue;
+            }
+            String imagePath = PathUtils.join(parentPath, df.getName());
+            try {
+                String thumbUrl = thumbnailCacheService.cacheThumbnail(engineId, imagePath, client);
+                if (thumbUrl != null && !thumbUrl.isEmpty()) {
+                    df.setThumbnailUrl(thumbUrl);
+                    dirFileRepository.save(df);
+                    generated++;
+                } else {
+                    // 小图或不生成：清空错误的缩略图字段，列表用原图
+                    if (df.getThumbnailUrl() != null) {
+                        df.setThumbnailUrl(null);
+                        dirFileRepository.save(df);
+                    }
+                    skipped++;
+                }
+            } catch (Exception e) {
+                log.warn("生成图片缩略图失败: engineId={}, path={}, err={}", engineId, imagePath, e.getMessage());
+            }
+        }
+        // 缩略图生成后，再刷新本批视频 coverUrl（可能已有缩略图）
+        if (generated > 0) {
+            List<DirFile> refreshed = dirFileRepository.findByDirectoryId(directoryId);
+            applyVideoCoverUrls(engineId, parentPath, refreshed);
+            dirFileRepository.saveAll(refreshed);
+        }
+        if (generated > 0 || skipped > 0) {
+            log.info("图片缩略图: engineId={}, path={}, generated={}, skippedOrSmall={}",
+                    engineId, parentPath, generated, skipped);
         }
     }
 
@@ -415,7 +477,23 @@ private boolean shouldSkipItem(FileItem item) {
     }
 
     /** 目录预览：本层第一张图片的原图代理 URL */
-    private String resolveDirThumbnail(Long engineId, String path, List<FileItem> items, AlistClient client) {
+    /**
+     * 目录预览：优先本层图片的 WebP 缩略图，否则原图代理。
+     */
+    private String resolveDirThumbnail(Long engineId, String path, Long directoryId,
+                                       List<FileItem> items, AlistClient client) {
+        if (directoryId != null) {
+            List<DirFile> files = dirFileRepository.findByDirectoryId(directoryId);
+            for (DirFile df : files) {
+                if (df.getName() == null || !MediaTypes.isImage(df.getName())) {
+                    continue;
+                }
+                if (df.getThumbnailUrl() != null && !df.getThumbnailUrl().isEmpty()) {
+                    return df.getThumbnailUrl();
+                }
+                return MediaTypes.proxyUrl(engineId, PathUtils.join(path, df.getName()));
+            }
+        }
         for (FileItem item : items) {
             if (shouldSkipItem(item) || Boolean.TRUE.equals(item.getIsDir()) || !MediaTypes.isImage(item.getName())) {
                 continue;

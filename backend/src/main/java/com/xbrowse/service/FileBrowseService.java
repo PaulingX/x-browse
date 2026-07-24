@@ -401,9 +401,14 @@ public class FileBrowseService {
             String url = mediaAccessService.withAccessToken(MediaTypes.mediaUrl(engineId, fullPath, df.getName()));
             fi.setUrl(url);
             if (MediaTypes.isImage(df.getName())) {
-                fi.setThumbnailUrl(url);
+                // 列表预览：优先 WebP 缩略图（>500KB 同步时生成），小图用原图
+                if (df.getThumbnailUrl() != null && !df.getThumbnailUrl().isEmpty()) {
+                    fi.setThumbnailUrl(mediaAccessService.withAccessToken(df.getThumbnailUrl()));
+                } else {
+                    fi.setThumbnailUrl(url);
+                }
             } else if (MediaTypes.isVideo(df.getName())) {
-                // 优先使用同步时写入的 coverUrl
+                // 优先使用同步时写入的 coverUrl（可能已是封面图的 WebP）
                 String cover = df.getCoverUrl();
                 if (cover != null && !cover.isEmpty()) {
                     fi.setThumbnailUrl(mediaAccessService.withAccessToken(cover));

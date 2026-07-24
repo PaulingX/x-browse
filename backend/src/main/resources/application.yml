@@ -26,8 +26,10 @@ xbrowse:
   data-dir: ${XBROWSE_DATA_DIR:./data}
   cache-dir: ${XBROWSE_CACHE_DIR:./data/cache}
   log-dir: ${XBROWSE_LOG_DIR:./logs}
-  # 列表不生成缩略图，直接用原图代理（保留开关兼容旧配置）
-  thumbnail-enabled: ${XBROWSE_THUMBNAIL_ENABLED:false}
+  # 同步时：原图 > 500KB 生成 WebP 缩略图（不缩放，只压体积）
+  thumbnail-enabled: ${XBROWSE_THUMBNAIL_ENABLED:true}
+  # 小于等于该字节数不生成缩略图（默认 500KB = 512000）
+  thumbnail-min-source-bytes: ${XBROWSE_THUMBNAIL_MIN_SOURCE_BYTES:512000}
   # 是否忽略以 . 开头的文件夹
   ignore-dot-dirs: ${XBROWSE_IGNORE_DOT_DIRS:true}
   # 忽略入库的文件后缀（逗号分隔，不含点）

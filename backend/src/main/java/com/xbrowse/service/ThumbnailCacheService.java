@@ -41,7 +41,8 @@ public class ThumbnailCacheService {
 
     private static final String THUMBNAILS_DIR = "thumbnails";
     private static final String THUMB_EXT = ".webp";
-    private static final float WEBP_QUALITY = 1.0f;
+    /** WebP 质量：1.0 无损倾向；略降一点可进一步减小体积 */
+    private static final float WEBP_QUALITY = 0.85f;
     private static final int DOWNLOAD_READ_TIMEOUT_MS = 60_000;
     private static final int MAX_CACHE_WRITERS = 2;
     private static final long LOCK_WAIT_MS = 30_000L;
